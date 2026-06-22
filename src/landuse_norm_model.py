@@ -873,6 +873,24 @@ def render_panel_title(draw: ImageDraw.ImageDraw, x: int, y: int, title: str) ->
     draw.text((x, y), title, fill=(15, 23, 42))
 
 
+def draw_text_badge(
+    draw: ImageDraw.ImageDraw,
+    x: int,
+    y: int,
+    text: str,
+    fill: tuple[int, int, int] = (248, 250, 252),
+    text_fill: tuple[int, int, int] = (15, 23, 42),
+) -> None:
+    bbox = draw.textbbox((x, y), text)
+    pad = 2
+    draw.rectangle(
+        [bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad],
+        fill=fill,
+        outline=(15, 23, 42),
+    )
+    draw.text((x, y), text, fill=text_fill)
+
+
 def render_hierarchy_overlay(
     draw: ImageDraw.ImageDraw,
     x0: int,
@@ -901,6 +919,8 @@ def render_hierarchy_overlay(
             width = 1 + int(2 * strength)
             for offset in range(width):
                 draw.rectangle([x + offset, y + offset, x1 - offset, y1 - offset], outline=color)
+            if block_size * scale >= 40:
+                draw_text_badge(draw, x + 4, y + 4, NORMS[norm]["key"])
 
 
 def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: dict[str, Any]) -> Image.Image:
@@ -967,6 +987,121 @@ def make_contact_sheet(frames: list[Image.Image], path: Path, columns: int = 3) 
     for idx, thumb in enumerate(thumbs):
         sheet.paste(thumb, ((idx % columns) * 360, (idx // columns) * 184))
     sheet.save(path)
+
+
+def block_summaries(cells: list[Cell], size: int, metric: dict[str, Any]) -> list[dict[str, Any]]:
+    block_norms = metric.get("block_norms", [])
+    block_strength = metric.get("block_strength", [])
+    block_rows = int(metric.get("block_rows", 0))
+    block_cols = int(metric.get("block_cols", 0))
+    block_size = int(metric.get("block_size", size))
+    summaries = []
+    for br in range(block_rows):
+        for bc in range(block_cols):
+            block_id = br * block_cols + bc
+            members = [cell for cell in cells if cell.block_id == block_id]
+            alive = [cell for cell in members if cell.alive]
+            norm_counts = [0] * len(NORMS)
+            landuse_counts = [0] * len(LAND_USES)
+            service = 0.0
+            critical_total = 0
+            critical_alive = 0
+            for cell in alive:
+                norm_counts[cell.norm] += 1
+                landuse_counts[cell.landuse] += 1
+                service += cell.served / max(cell.demand, 1e-6)
+                if cell.critical:
+                    critical_total += 1
+                    if cell.health > 0.08:
+                        critical_alive += 1
+            hierarchy_norm = block_norms[block_id] if block_id < len(block_norms) else -1
+            hierarchy_strength = (
+                block_strength[block_id]
+                if hierarchy_norm >= 0 and block_id < len(block_strength)
+                else 0.0
+            )
+            aligned = [
+                cell
+                for cell in alive
+                if hierarchy_norm >= 0 and cell.norm == hierarchy_norm
+            ]
+            top_norm = max(range(len(NORMS)), key=lambda idx: norm_counts[idx]) if alive else -1
+            top_landuse = max(range(len(LAND_USES)), key=lambda idx: landuse_counts[idx]) if members else -1
+            summaries.append(
+                {
+                    "block_id": block_id,
+                    "block_row": br,
+                    "block_col": bc,
+                    "row_start": br * block_size,
+                    "col_start": bc * block_size,
+                    "hierarchy_rule": NORMS[hierarchy_norm]["key"] if hierarchy_norm >= 0 else "",
+                    "hierarchy_rule_name": NORMS[hierarchy_norm]["name"] if hierarchy_norm >= 0 else "",
+                    "hierarchy_strength": hierarchy_strength,
+                    "hierarchy_alignment": len(aligned) / max(1, len(alive)),
+                    "dominant_individual_norm": NORMS[top_norm]["key"] if top_norm >= 0 else "",
+                    "dominant_individual_norm_frequency": max(norm_counts) / max(1, len(alive)),
+                    "dominant_landuse": LAND_USES[top_landuse]["key"] if top_landuse >= 0 else "",
+                    "alive_fraction": len(alive) / max(1, len(members)),
+                    "mean_service": service / max(1, len(alive)),
+                    "critical_survival": critical_alive / max(1, critical_total),
+                    "critical_count": critical_total,
+                }
+            )
+    return summaries
+
+
+def write_hierarchy_blocks_csv(cells: list[Cell], size: int, metric: dict[str, Any], path: Path) -> None:
+    summaries = block_summaries(cells, size, metric)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(summaries[0].keys()))
+        writer.writeheader()
+        writer.writerows(summaries)
+
+
+def write_hierarchy_map_png(cells: list[Cell], size: int, metric: dict[str, Any], path: Path) -> None:
+    summaries = block_summaries(cells, size, metric)
+    block_rows = int(metric.get("block_rows", 0))
+    block_cols = int(metric.get("block_cols", 0))
+    cell_w = 150
+    cell_h = 108
+    margin = 40
+    header = 58
+    width = margin * 2 + block_cols * cell_w
+    height = margin + header + block_rows * cell_h + 96
+    image = Image.new("RGB", (width, height), (248, 250, 252))
+    draw = ImageDraw.Draw(image)
+    draw.text((margin, 24), "Final hierarchical rule map", fill=(15, 23, 42))
+    draw.text(
+        (margin, 42),
+        "Each block label shows the institutionalized rule, its strength, alignment, and dominant individual norm.",
+        fill=(71, 85, 105),
+    )
+    for item in summaries:
+        x = margin + int(item["block_col"]) * cell_w
+        y = margin + header + int(item["block_row"]) * cell_h
+        rule = item["hierarchy_rule"]
+        if rule:
+            norm_idx = next(idx for idx, norm in enumerate(NORMS) if norm["key"] == rule)
+            color = blend(NORMS[norm_idx]["color"], 0.78)
+        else:
+            color = (226, 232, 240)
+        draw.rectangle([x, y, x + cell_w - 10, y + cell_h - 10], fill=color, outline=(15, 23, 42))
+        draw.text((x + 10, y + 10), f"B{item['block_id']:02d} {rule or 'none'}", fill=(15, 23, 42))
+        draw.text((x + 10, y + 31), f"strength {item['hierarchy_strength']:.2f}", fill=(15, 23, 42))
+        draw.text((x + 10, y + 50), f"align {item['hierarchy_alignment']:.2f}", fill=(15, 23, 42))
+        draw.text((x + 10, y + 69), f"indiv {item['dominant_individual_norm']} {item['dominant_individual_norm_frequency']:.2f}", fill=(15, 23, 42))
+        draw.text((x + 10, y + 88), f"LU {item['dominant_landuse']} alive {item['alive_fraction']:.2f}", fill=(15, 23, 42))
+
+    legend_x = margin
+    legend_y = height - 74
+    draw.text((legend_x, legend_y), "Rule colors", fill=(15, 23, 42))
+    legend_y += 22
+    for idx, norm in enumerate(NORMS):
+        x = legend_x + (idx % 4) * 190
+        y = legend_y + (idx // 4) * 24
+        draw.rectangle([x, y + 3, x + 16, y + 16], fill=norm["color"])
+        draw.text((x + 22, y), f"{norm['key']} {norm['name']}", fill=(15, 23, 42))
+    image.save(path)
 
 
 def write_csv(metrics: list[dict[str, Any]], path: Path) -> None:
@@ -1118,6 +1253,10 @@ def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
       <img src="landuse_norm_metrics.png" alt="land-use norm metrics">
     </div>
     <div class="panel">
+      <h2>Hierarchy Rule Map</h2>
+      <img src="landuse_norm_hierarchy_map.png" alt="annotated hierarchy rule map">
+    </div>
+    <div class="panel">
       <h2>Norms</h2>
       <table><tbody>{norm_rows}</tbody></table>
     </div>
@@ -1127,6 +1266,7 @@ def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
     </div>
     <div class="panel">
       <p>Metrics: <a href="landuse_norm_metrics.png">PNG</a> / <a href="landuse_norm_metrics.csv">CSV</a> / <a href="landuse_norm_metrics.json">JSON</a></p>
+      <p>Hierarchy blocks: <a href="landuse_norm_hierarchy_map.png">PNG</a> / <a href="landuse_norm_hierarchy_blocks.csv">CSV</a></p>
     </div>
   </main>
 </body>
@@ -1149,6 +1289,18 @@ def save_result(result: SimulationResult, out_dir: Path) -> None:
     result.frames[-1].save(out_dir / "landuse_norm_final_snapshot.png")
     make_contact_sheet(result.contact_frames, out_dir / "landuse_norm_contact_sheet.png")
     write_metrics_png(result.metrics, out_dir / "landuse_norm_metrics.png")
+    write_hierarchy_map_png(
+        result.final_cells,
+        int(math.sqrt(len(result.final_cells))),
+        result.metrics[-1],
+        out_dir / "landuse_norm_hierarchy_map.png",
+    )
+    write_hierarchy_blocks_csv(
+        result.final_cells,
+        int(math.sqrt(len(result.final_cells))),
+        result.metrics[-1],
+        out_dir / "landuse_norm_hierarchy_blocks.csv",
+    )
     (out_dir / "landuse_norm_metrics.json").write_text(
         json.dumps(result.metrics, indent=2),
         encoding="utf-8",

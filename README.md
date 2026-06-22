@@ -161,6 +161,8 @@ It contains:
 - `landuse_norm_evolution.gif`
 - `landuse_norm_contact_sheet.png`
 - `landuse_norm_final_snapshot.png`
+- `landuse_norm_hierarchy_map.png`
+- `landuse_norm_hierarchy_blocks.csv`
 - `landuse_norm_metrics.png`
 - `landuse_norm_results.html`
 - `landuse_norm_metrics.csv`
