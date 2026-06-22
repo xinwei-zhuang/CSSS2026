@@ -123,6 +123,24 @@ A solar shock is applied during the middle of the run to test resilience.
 .\.venv\Scripts\python.exe scripts\run_landuse_norm_model.py --config configs\landuse-norm-final.json
 ```
 
+## Scenario Sweep
+
+Run a parameter sweep across shock severity, sharing radius, rebuild rate, and
+random seed:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_scenario_sweep.py --config configs\landuse-norm-final.json --steps 336 --out-dir results\scenario_sweep
+```
+
+The sweep is intended to compare regimes, not to make one final animation for
+every parameter set. It writes a compact comparison package:
+
+- `scenario_sweep_results.csv`
+- `scenario_sweep_results.json`
+- `scenario_sweep_summary.png`
+- `scenario_sweep_outcome_map.png`
+- `scenario_sweep_representative_snapshots.png`
+
 ## Outputs
 
 The final result package is:
