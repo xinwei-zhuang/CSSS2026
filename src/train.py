@@ -123,6 +123,9 @@ def log_metrics(
         # Training metrics
         metrics["training/avg_grad_norm"] = avg_grad_norm
         metrics["training/loss"] = stats["loss"]
+        if "city_service" in stats:
+            for i, service in enumerate(stats["city_service"]):
+                metrics[f"city_energy/service_nca_{i:02d}"] = service
 
         # Individual grad norms
         # for i, grad_norm in enumerate(stats["grad_norms"]):
@@ -147,8 +150,12 @@ def log_metrics(
     # Terminal logging
     growth_stats = [f"{g:.2f}" for g in stats["growth"]]
     growth_str = ", ".join(growth_stats)
+    city_service_str = ""
+    if "city_service" in stats:
+        city_service = ", ".join(f"{s:.2f}" for s in stats["city_service"])
+        city_service_str = f" | Service: [{city_service}]"
     print(
-        f"Epoch {epoch:6d} | Growth: [{growth_str}] | Grad: {avg_grad_norm:.3f} | Loss: {stats['loss']:.2f}"
+        f"Epoch {epoch:6d} | Growth: [{growth_str}] | Grad: {avg_grad_norm:.3f} | Loss: {stats['loss']:.2f}{city_service_str}"
     )
 
 

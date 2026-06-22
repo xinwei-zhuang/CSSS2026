@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import einsum, rearrange, reduce, repeat
 
+from city_energy import CityEnergyProfiles
 from config import Config
 
 
@@ -219,6 +220,21 @@ class CASunGroup:
         self.city_cycle_period = config.city_cycle_period
         self.city_environment_strength = config.city_environment_strength
         self.city_hypercycle_gamma = config.city_hypercycle_gamma
+        self.city_energy_weight = config.city_energy_weight
+        self.city_critical_weight = config.city_critical_weight
+        self.city_solar_scale = config.city_solar_scale
+        self.city_step = 0
+        self.city_daylight = 0.5
+        self.city_energy = (
+            CityEnergyProfiles.from_config(
+                config,
+                self.n_ncas,
+                self.device,
+                torch.float32,
+            )
+            if config.city_mode
+            else None
+        )
 
         # Make list of proposed upates and then iterate through to find total strengths
         # This is marking what you are fighting, sunshine is idx 0
@@ -277,7 +293,7 @@ class CASunGroup:
             config: Configuration object.
         """
         if config.city_mode:
-            sun_vec = self._city_environment_vector(daylight=0.5)
+            sun_vec = self._city_environment_vector(daylight=0.5, step=0)
         else:
             sun_vec = torch.randn(self.out_dim, device=config.device)
 
@@ -289,39 +305,79 @@ class CASunGroup:
 
         self.sun_optim = torch.optim.AdamW([self.sun_update], lr=config.learning_rate)
 
-    def _city_environment_vector(self, daylight: float) -> torch.Tensor:
+    def _city_environment_vector(self, daylight: float, step: int) -> torch.Tensor:
         """Background competitor for an urban energy petri dish.
 
         The first half of state channels are attack channels and the second half
-        are defense channels. Daylight favors solar-rich tissue; night favors
-        storage/defense pressure. The vector is still abstract, but its rhythm
-        makes the homogeneous background less static than random noise.
+        are defense channels. Real demand profiles increase stress pressure;
+        daylight and storage support increase defense pressure.
         """
         vec = torch.zeros(self.out_dim, device=self.device)
         attack_dim = max(1, self.cell_state_dim // 2)
         defense_dim = max(1, self.cell_state_dim // 2)
+        demand_pressure = 1.0
+        storage_pressure = 0.6
+        critical_pressure = 0.3
+        if self.city_energy is not None:
+            demand_pressure = float(self.city_energy.demand_at(step).mean().item())
+            storage_pressure = float(self.city_energy.storage_support.mean().item())
+            critical_pressure = float(self.city_energy.critical_weight.mean().item())
 
-        vec[:attack_dim] = self.city_environment_strength * (1.0 - daylight)
-        vec[attack_dim : attack_dim + defense_dim] = self.city_environment_strength * daylight
+        stress = max(0.0, demand_pressure - daylight * self.city_solar_scale)
+        defense = 0.35 * daylight + 0.45 * storage_pressure + 0.20 * critical_pressure
+        vec[:attack_dim] = self.city_environment_strength * (
+            0.65 * stress + 0.25 * (1.0 - daylight)
+        )
+        vec[attack_dim : attack_dim + defense_dim] = self.city_environment_strength * defense
 
         if self.cell_hidden_dim > 0:
             hidden_start = self.cell_state_dim
             hidden_stop = min(self.out_dim, hidden_start + self.cell_hidden_dim)
             hidden = torch.linspace(-1.0, 1.0, hidden_stop - hidden_start, device=self.device)
-            vec[hidden_start:hidden_stop] = 0.12 * hidden * (2.0 * daylight - 1.0)
+            vec[hidden_start:hidden_stop] = 0.12 * hidden * (
+                demand_pressure - daylight
+            )
 
         return vec
 
     def set_city_environment_phase(self, step: int) -> None:
-        if not (self.city_mode and self.city_daily_cycle):
+        if not self.city_mode:
             return
-        phase = (step % max(1, self.city_cycle_period)) / max(1, self.city_cycle_period)
-        daylight = max(0.0, math.sin(math.pi * phase))
+        self.city_step = step
+        if self.city_daily_cycle:
+            phase = (step % max(1, self.city_cycle_period)) / max(1, self.city_cycle_period)
+            daylight = max(0.0, math.sin(math.pi * phase))
+        else:
+            daylight = 0.5
+        self.city_daylight = daylight
         with torch.no_grad():
-            sun_vec = self._city_environment_vector(daylight=daylight)
+            sun_vec = self._city_environment_vector(daylight=daylight, step=step)
             sun_vec[self.hidden_idxs - self.N] = 0.0
             sun_vec = sun_vec / sun_vec.norm().clamp_min(1e-8)
             self.sun_update.copy_(rearrange(sun_vec, "oc -> () oc () ()").to(self.sun_update.dtype))
+
+    def _city_energy_update(self) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if (
+            not self.city_mode
+            or self.city_energy is None
+            or self.city_energy_weight <= 0
+        ):
+            return None
+        service = self.city_energy.service_ratio(
+            self.city_step,
+            self.city_daylight,
+            self.city_solar_scale,
+        ).to(device=self.device)
+        value = service * (
+            1.0 + self.city_critical_weight * self.city_energy.critical_weight
+        )
+        normalized_value = value / value.mean().clamp_min(1e-6)
+        weights = torch.clamp(
+            1.0 + self.city_energy_weight * (normalized_value - 1.0),
+            min=0.25,
+            max=2.50,
+        )
+        return weights, service
 
     def _update_sun(self, step: bool = True):
         if step:
@@ -594,6 +650,20 @@ class CASunGroup:
                 dim=0,
             )
 
+        city_energy_update = self._city_energy_update()
+        if city_energy_update is not None and N > 0:
+            city_weights, city_service = city_energy_update
+            alivenesses = torch.cat(
+                [
+                    alivenesses[:1],
+                    alivenesses[1:]
+                    * rearrange(city_weights.to(alivenesses.dtype), "n -> n 1 1 1"),
+                ],
+                dim=0,
+            )
+        else:
+            city_service = None
+
         # Go down into batch
         batch_alive = alivenesses.view(M, B, -1).sum(-1)  # [N, B]
 
@@ -615,13 +685,21 @@ class CASunGroup:
         percent_covered = percent_covered * 100.0
 
         # sun_growth = 100.0 - sum(percent_covered)
-        return {
+        stats = {
             "loss": loss.detach().item(),
             "ind_loss": ind_losses.tolist(),
             # "growth": [sun_growth] + percent_covered.tolist(),
             "growth": percent_covered.tolist(),
             "grad_norm": grad_norm,
         }
+        if city_service is not None:
+            stats["city_service"] = city_service.detach().tolist()
+            stats["city_demand"] = (
+                self.city_energy.demand_at(self.city_step).detach().tolist()
+                if self.city_energy is not None
+                else []
+            )
+        return stats
 
     def save(self, config: Config, run_name: str) -> None:
         """Save the models for later inference.

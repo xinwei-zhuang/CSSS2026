@@ -165,7 +165,9 @@ class World:
         epoch_steps = steps_before + steps_per
 
         # Run steps
-        grid_storage = torch.zeros((epoch_steps, *grid.shape))
+        grid_storage = torch.zeros(
+            (epoch_steps, *grid.shape), device=grid.device, dtype=grid.dtype
+        )
         # Use conditional autocast
         with device_autocast(self.device):
             with torch.no_grad():
@@ -280,7 +282,7 @@ class World:
             seed_vals = seed_vals.repeat_interleave(config.n_seeds, dim=0)
             seed_vals = (
                 seed_vals.unsqueeze(0)  # [1, NS*N, SS]
-                .expand(config.pool_size, -1, -1, -1)
+                .expand(config.pool_size, -1, -1)
                 .reshape(-1, self.seed_dim)
             )
 

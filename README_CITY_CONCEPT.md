@@ -30,6 +30,11 @@ urban-energy experiment instead of a purely abstract substrate.
   stress pressure.
 - `city_hypercycle_gamma` adds a weak cyclic dependency among the three tissues,
   inspired by the cooperative/competitive loop we discussed for the city model.
+- `city_profiles_csv` loads the real hourly building energy profiles and turns
+  them into 24-hour demand curves used during training.
+- `city_energy_weight` makes profile-based service survival part of the growth
+  objective. Tissues with enough solar / storage to serve their current demand
+  get stronger survival weight.
 
 ## Run
 
@@ -54,7 +59,15 @@ python src/train.py --config configs/city-petri.json
 ## Current Scope
 
 This does not yet load the San Francisco building energy-profile CSVs. Those
-profiles are still used by the separate 10x10 HTML visualizer. The next clean
-step would be to project hourly demand and solar potential into the NCA state
-channels or into the background environment, then score outcomes by
-critical-load survival rather than only area growth.
+profiles are now read from `../data/energy_profiles_clean/energy_profiles_hourly_used.csv`.
+The loader samples residential and commercial profiles, compresses each yearly
+profile into an average 24-hour curve, and maps those curves onto:
+
+- NCA 0: residential / solar-support demand
+- NCA 1: commercial / dense-load demand
+- NCA 2: mixed demand with high storage and critical-load weighting
+
+This is still a first bridge, not the final empirical model. It uses real
+demand profiles, while solar potential and storage capacity are still abstract
+city-tissue parameters. The next step is to assign explicit building metadata
+to cells and score final resilience by critical-load survival.
