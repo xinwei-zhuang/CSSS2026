@@ -1104,6 +1104,154 @@ def write_hierarchy_map_png(cells: list[Cell], size: int, metric: dict[str, Any]
     image.save(path)
 
 
+def iso_point(
+    row: float,
+    col: float,
+    z: float,
+    origin_x: int,
+    origin_y: int,
+    tile_w: float,
+    tile_h: float,
+    z_scale: float,
+) -> tuple[int, int]:
+    x = origin_x + (col - row) * tile_w * 0.5
+    y = origin_y + (col + row) * tile_h * 0.5 - z * z_scale
+    return round(x), round(y)
+
+
+def draw_iso_quad(
+    draw: ImageDraw.ImageDraw,
+    corners: list[tuple[float, float, float]],
+    origin_x: int,
+    origin_y: int,
+    tile_w: float,
+    tile_h: float,
+    z_scale: float,
+    fill: tuple[int, int, int],
+    outline: tuple[int, int, int] | None = None,
+) -> list[tuple[int, int]]:
+    points = [
+        iso_point(row, col, z, origin_x, origin_y, tile_w, tile_h, z_scale)
+        for row, col, z in corners
+    ]
+    draw.polygon(points, fill=fill)
+    if outline:
+        draw.line(points + [points[0]], fill=outline, width=1)
+    return points
+
+
+def write_hierarchy_canopy_png(cells: list[Cell], size: int, metric: dict[str, Any], path: Path) -> None:
+    block_norms = metric.get("block_norms", [])
+    block_strength = metric.get("block_strength", [])
+    block_rows = int(metric.get("block_rows", 0))
+    block_cols = int(metric.get("block_cols", 0))
+    block_size = int(metric.get("block_size", size))
+    tile_w = 17.0
+    tile_h = 8.5
+    z_scale = 58.0
+    width = 1180
+    height = 820
+    origin_x = width // 2
+    origin_y = 360
+    image = Image.new("RGB", (width, height), (248, 250, 252))
+    draw = ImageDraw.Draw(image)
+    draw.text((36, 26), "2D hierarchy canopy", fill=(15, 23, 42))
+    draw.text(
+        (36, 46),
+        "Base plane is the 2D land-use grid. Elevated canopies are block-level rules; height shows rule strength.",
+        fill=(71, 85, 105),
+    )
+
+    # Base city tissue.
+    for diagonal in range(size * 2):
+        for row in range(size):
+            col = diagonal - row
+            if col < 0 or col >= size:
+                continue
+            cell = cells[row * size + col]
+            color = LAND_USES[cell.landuse]["color"]
+            if not cell.alive:
+                color = blend(color, 0.32)
+            draw_iso_quad(
+                draw,
+                [
+                    (row, col, 0.0),
+                    (row, col + 1, 0.0),
+                    (row + 1, col + 1, 0.0),
+                    (row + 1, col, 0.0),
+                ],
+                origin_x,
+                origin_y,
+                tile_w,
+                tile_h,
+                z_scale,
+                fill=color,
+                outline=(226, 232, 240),
+            )
+
+    # Vertical ties from aligned agents to their institutionalized block rule.
+    for diagonal in range(size * 2):
+        for row in range(size):
+            col = diagonal - row
+            if col < 0 or col >= size:
+                continue
+            cell = cells[row * size + col]
+            if not cell.alive:
+                continue
+            if cell.block_id >= len(block_norms):
+                continue
+            rule = block_norms[cell.block_id]
+            if rule < 0 or rule != cell.norm:
+                continue
+            strength = block_strength[cell.block_id] if cell.block_id < len(block_strength) else 0.0
+            z_top = 1.2 + 2.8 * strength
+            base = iso_point(row + 0.5, col + 0.5, 0.08, origin_x, origin_y, tile_w, tile_h, z_scale)
+            top = iso_point(row + 0.5, col + 0.5, z_top, origin_x, origin_y, tile_w, tile_h, z_scale)
+            line_color = blend(NORMS[rule]["color"], 0.72)
+            draw.line([base, top], fill=line_color, width=1)
+
+    # Elevated hierarchy surfaces.
+    slabs = []
+    for br in range(block_rows):
+        for bc in range(block_cols):
+            block_id = br * block_cols + bc
+            if block_id >= len(block_norms) or block_norms[block_id] < 0:
+                continue
+            rule = block_norms[block_id]
+            strength = block_strength[block_id] if block_id < len(block_strength) else 0.0
+            r0 = br * block_size
+            c0 = bc * block_size
+            r1 = min(size, r0 + block_size)
+            c1 = min(size, c0 + block_size)
+            z_top = 1.2 + 2.8 * strength
+            slabs.append((r0 + c0, r0, c0, r1, c1, rule, strength, z_top))
+    for _, r0, c0, r1, c1, rule, strength, z_top in sorted(slabs):
+        color = blend(NORMS[rule]["color"], 0.62)
+        corners_base = [(r0, c0, 0.0), (r0, c1, 0.0), (r1, c1, 0.0), (r1, c0, 0.0)]
+        corners_top = [(r0, c0, z_top), (r0, c1, z_top), (r1, c1, z_top), (r1, c0, z_top)]
+        base_points = [iso_point(*p, origin_x, origin_y, tile_w, tile_h, z_scale) for p in corners_base]
+        top_points = [iso_point(*p, origin_x, origin_y, tile_w, tile_h, z_scale) for p in corners_top]
+        for bp, tp in zip(base_points, top_points):
+            draw.line([bp, tp], fill=(100, 116, 139), width=1)
+        draw.polygon(top_points, fill=color)
+        draw.line(top_points + [top_points[0]], fill=NORMS[rule]["color"], width=2 + int(2 * strength))
+        cx, cy = iso_point((r0 + r1) * 0.5, (c0 + c1) * 0.5, z_top, origin_x, origin_y, tile_w, tile_h, z_scale)
+        draw_text_badge(draw, cx - 13, cy - 7, NORMS[rule]["key"])
+
+    # Legend.
+    legend_x = 36
+    legend_y = height - 126
+    draw.text((legend_x, legend_y), "Hierarchy rule colors", fill=(15, 23, 42))
+    legend_y += 22
+    for idx, norm in enumerate(NORMS):
+        x = legend_x + (idx % 4) * 200
+        y = legend_y + (idx // 4) * 25
+        draw.rectangle([x, y + 3, x + 16, y + 16], fill=norm["color"])
+        draw.text((x + 22, y), f"{norm['key']} {norm['name']}", fill=(15, 23, 42))
+    draw.text((36, height - 28), "Vertical lines connect aligned buildings to their block-level rule.", fill=(71, 85, 105))
+    image.save(path)
+
+
 def write_csv(metrics: list[dict[str, Any]], path: Path) -> None:
     with path.open("w", newline="", encoding="utf-8") as f:
         fields = [
@@ -1257,6 +1405,10 @@ def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
       <img src="landuse_norm_hierarchy_map.png" alt="annotated hierarchy rule map">
     </div>
     <div class="panel">
+      <h2>Hierarchy Canopy</h2>
+      <img src="landuse_norm_hierarchy_canopy.png" alt="2D hierarchy canopy">
+    </div>
+    <div class="panel">
       <h2>Norms</h2>
       <table><tbody>{norm_rows}</tbody></table>
     </div>
@@ -1266,7 +1418,7 @@ def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
     </div>
     <div class="panel">
       <p>Metrics: <a href="landuse_norm_metrics.png">PNG</a> / <a href="landuse_norm_metrics.csv">CSV</a> / <a href="landuse_norm_metrics.json">JSON</a></p>
-      <p>Hierarchy blocks: <a href="landuse_norm_hierarchy_map.png">PNG</a> / <a href="landuse_norm_hierarchy_blocks.csv">CSV</a></p>
+      <p>Hierarchy blocks: <a href="landuse_norm_hierarchy_map.png">map PNG</a> / <a href="landuse_norm_hierarchy_canopy.png">canopy PNG</a> / <a href="landuse_norm_hierarchy_blocks.csv">CSV</a></p>
     </div>
   </main>
 </body>
@@ -1294,6 +1446,12 @@ def save_result(result: SimulationResult, out_dir: Path) -> None:
         int(math.sqrt(len(result.final_cells))),
         result.metrics[-1],
         out_dir / "landuse_norm_hierarchy_map.png",
+    )
+    write_hierarchy_canopy_png(
+        result.final_cells,
+        int(math.sqrt(len(result.final_cells))),
+        result.metrics[-1],
+        out_dir / "landuse_norm_hierarchy_canopy.png",
     )
     write_hierarchy_blocks_csv(
         result.final_cells,
