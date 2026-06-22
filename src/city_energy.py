@@ -102,19 +102,17 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
-def _estimate_building_energy_metadata(
+def _estimate_roof_area_m2(
     metadata_csv: str,
     sample_size: int,
     usable_fraction: float,
-) -> tuple[dict[str, float], dict[str, float]]:
+) -> dict[str, float]:
     path = Path(metadata_csv) if metadata_csv else None
     fallback_roof = {"residential": 125.0, "commercial": 620.0}
-    fallback_load = {"residential": 0.45, "commercial": 18.0}
     if not path or not path.exists():
-        return fallback_roof, fallback_load
+        return fallback_roof
 
     roof_sums = {"residential": 0.0, "commercial": 0.0}
-    load_sums = {"residential": 0.0, "commercial": 0.0}
     counts = {"residential": 0, "commercial": 0}
     target_each = max(1, sample_size // 2)
     with path.open(newline="", encoding="utf-8") as f:
@@ -125,28 +123,20 @@ def _estimate_building_energy_metadata(
                 continue
             sqft = _safe_float(row.get("bldgsqft"), 0.0)
             floors = max(1.0, _safe_float(row.get("floor"), 1.0))
-            annual_total = _safe_float(row.get("annual_total"), 0.0)
             if sqft <= 0:
                 continue
             roof_m2 = sqft / floors * 0.092903 * usable_fraction
             if roof_m2 <= 0:
                 continue
             roof_sums[profile_type] += roof_m2
-            if annual_total > 0:
-                load_sums[profile_type] += annual_total / 8760.0
             counts[profile_type] += 1
             if counts["residential"] >= target_each and counts["commercial"] >= target_each:
                 break
 
-    roof_area = {
+    return {
         kind: roof_sums[kind] / counts[kind] if counts[kind] else fallback_roof[kind]
         for kind in fallback_roof
     }
-    avg_load_kw = {
-        kind: load_sums[kind] / counts[kind] if counts[kind] and load_sums[kind] > 0 else fallback_load[kind]
-        for kind in fallback_load
-    }
-    return roof_area, avg_load_kw
 
 
 def _synthetic_solar_generation() -> list[float]:
@@ -248,7 +238,7 @@ def _build_solar_generation_rows(
         int(config.city_solar_day),
     )
     pv_per_m2 = _pv_per_m2_kw(ghi, temp, float(config.city_pv_efficiency))
-    roof_area, avg_load_kw = _estimate_building_energy_metadata(
+    roof_area = _estimate_roof_area_m2(
         config.city_building_metadata_csv,
         max(0, int(config.city_profile_sample_size)),
         max(0.0, float(config.city_roof_usable_fraction)),
@@ -259,15 +249,12 @@ def _build_solar_generation_rows(
         (roof_area["residential"] + roof_area["commercial"]) * 0.5,
     ]
     # Keep training numerically gentle while preserving real climate shape and
-    # roof-area differences. The model still sees dimensionless daily curves.
-    type_load = [
-        avg_load_kw["residential"],
-        avg_load_kw["commercial"],
-        (avg_load_kw["residential"] + avg_load_kw["commercial"]) * 0.5,
+    # roof-area differences. The model still sees dimensionless daily curves,
+    # but large roofs keep their neighborhood-scale generation advantage.
+    raw_rows = [
+        [pv * area for pv in pv_per_m2]
+        for area in type_area
     ]
-    raw_rows = []
-    for area, load in zip(type_area, type_load):
-        raw_rows.append([pv * area / max(load, 1e-6) for pv in pv_per_m2])
     reference = sum(sum(row) / len(row) for row in raw_rows) / len(raw_rows)
     if reference <= 0:
         base = _synthetic_solar_generation()
@@ -278,7 +265,7 @@ def _build_solar_generation_rows(
     solar_rows = []
     for idx in range(n_ncas):
         solar_rows.append(normalized_rows[idx % 3])
-    return solar_rows, source, roof_area, avg_load_kw
+    return solar_rows, source, roof_area
 
 
 @dataclass
@@ -290,7 +277,6 @@ class CityEnergyProfiles:
     source: str
     solar_source: str
     roof_area_m2: dict[str, float]
-    avg_load_kw: dict[str, float]
     residential_profiles: int
     commercial_profiles: int
 
@@ -362,7 +348,7 @@ class CityEnergyProfiles:
         demand_scales = [0.82, 1.28, 1.00]
         storage_support = [0.42, 0.34, 1.18]
         critical_weight = [0.15, 0.35, 1.00]
-        solar_rows, solar_source, roof_area, avg_load_kw = _build_solar_generation_rows(
+        solar_rows, solar_source, roof_area = _build_solar_generation_rows(
             config,
             n_ncas,
         )
@@ -385,7 +371,6 @@ class CityEnergyProfiles:
             source=source,
             solar_source=solar_source,
             roof_area_m2=roof_area,
-            avg_load_kw=avg_load_kw,
             residential_profiles=len(residential),
             commercial_profiles=len(commercial),
         )

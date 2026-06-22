@@ -9,7 +9,7 @@ The first three NCAs are treated as competing urban tissues:
 
 | NCA | City role | Abstract behavior |
 | --- | --- | --- |
-| 0 | solar / low-rise support tissue | high roof-to-load ratio, surplus support |
+| 0 | solar / low-rise support tissue | large usable roof area, surplus support |
 | 1 | dense load / commercial tissue | higher demand, stronger growth pressure |
 | 2 | storage / critical-support tissue | buffering, critical-load survival |
 
@@ -80,9 +80,9 @@ roof_area_estimate * SF climate radiation * PV efficiency correction
 The EPW climate file supplies hourly `ghi` and `temp_air`. By default the config
 uses the June 13 San Francisco-Presidio weather slice, matching the reference
 notebook. The PV output is normalized before training so it acts as a stable
-survival signal rather than an unbounded physical unit. Solar potential is also
-divided by type-level average load from `annual_total / 8760`, so the model sees
-roof-to-load advantage rather than roof area alone.
+survival signal rather than an unbounded physical unit. It is not divided by the
+building's own average load: large-area buildings keep their role as
+neighborhood-scale generators that can share energy with surrounding cells.
 
 This is still a first bridge, not the final empirical model. It uses real demand
 profiles, real SF radiation shape, and metadata-based roof-area estimates, while
