@@ -1,0 +1,23 @@
+{
+    "grid_size": 36,
+    "steps": 168,
+    "seed": 42,
+    "share_radius": 2,
+    "mutation_rate": 0.012,
+    "imitation_rate": 0.18,
+    "rebuild_rate": 0.018,
+    "normal_grid_support": 0.72,
+    "outage_grid_support": 0.0,
+    "shock_start": 72,
+    "shock_end": 120,
+    "solar_shock_factor": 0.38,
+    "demand_csv": "../data/energy_profiles_clean/energy_profiles_hourly_used.csv",
+    "metadata_csv": "../data/energy_profiles_clean/building_energy_metadata.csv",
+    "solar_epw": "C:/UCBcourses/RESEARCH/Lau grant/solar/validation/validation/step 4 PV/USA_CA_San.Francisco-Presidio.994016_TMYx.2009-2023/USA_CA_San.Francisco-Presidio.994016_TMYx.2009-2023.epw",
+    "solar_month": 6,
+    "solar_day": 13,
+    "pv_efficiency": 0.2,
+    "roof_usable_fraction": 0.65,
+    "profile_sample_size": 240,
+    "out_dir": "results/final_landuse_norm"
+}
