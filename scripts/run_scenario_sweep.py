@@ -115,6 +115,13 @@ def summarize(
         - min(row["alive_fraction"] for row in last72),
         "last72_served_range": max(row["served_fraction"] for row in last72)
         - min(row["served_fraction"] for row in last72),
+        "final_entity_count": final.get("entity_count", 0),
+        "final_mean_entity_size": final.get("mean_entity_size", 0.0),
+        "final_largest_entity_size": final.get("largest_entity_size", 0),
+        "landuse_changes_total": sum(row.get("landuse_changes", 0) for row in metrics),
+        "redevelopment_landuse_changes_total": sum(row.get("redevelopment_landuse_changes", 0) for row in metrics),
+        "merge_events_total": sum(row.get("merge_events", 0) for row in metrics),
+        "building_rebuilds_total": sum(row.get("building_rebuilds", 0) for row in metrics),
         "top_norm": NORMS[top_idx]["key"],
         "top_norm_name": NORMS[top_idx]["name"],
         "top_norm_freq": norm_freq[top_idx],
@@ -311,6 +318,8 @@ def main() -> None:
     data = load_data(base_config)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    for stale in list(out_dir.glob("scenario_sweep_*")) + list(out_dir.glob("*_snapshot.png")):
+        stale.unlink()
 
     rows = []
     snapshots: dict[str, Image.Image] = {}

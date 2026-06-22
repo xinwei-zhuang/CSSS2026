@@ -119,6 +119,7 @@ NORMS = [
 class Cell:
     landuse: int
     norm: int
+    entity_id: int = -1
     alive: bool = True
     reputation: float = 0.62
     health: float = 1.0
@@ -393,6 +394,7 @@ class LandUseNormSimulation:
         self.rng = random.Random(int(config["seed"]))
         self.cells: list[Cell] = []
         self.landuse_map = self._make_landuse_map()
+        self.next_entity_id = self.size * self.size
         self._init_cells()
 
     def _make_landuse_map(self) -> list[int]:
@@ -436,6 +438,7 @@ class LandUseNormSimulation:
             cell = Cell(
                 landuse=landuse,
                 norm=norm,
+                entity_id=idx,
                 reputation=self.rng.uniform(0.48, 0.82),
                 health=self.rng.uniform(0.88, 1.0),
                 storage_cap=storage_cap,
@@ -481,7 +484,27 @@ class LandUseNormSimulation:
             shock = float(self.config["solar_shock_factor"])
         return curve[hour] * shock
 
+    def update_landuse(self, idx: int, landuse: int) -> None:
+        cell = self.cells[idx]
+        old_cap = cell.storage_cap
+        spec = LAND_USES[landuse]
+        cell.landuse = landuse
+        self.landuse_map[idx] = landuse
+        cell.critical = bool(spec["critical"])
+        cell.storage_cap = spec["storage_cap"] * self.rng.uniform(0.90, 1.12)
+        if old_cap > 0:
+            cell.storage = min(cell.storage_cap, cell.storage * cell.storage_cap / old_cap)
+
+    def entity_sizes(self) -> dict[int, int]:
+        sizes: dict[int, int] = {}
+        for cell in self.cells:
+            if cell.alive:
+                sizes[cell.entity_id] = sizes.get(cell.entity_id, 0) + 1
+        return sizes
+
     def should_share(self, donor: Cell, receiver: Cell, distance: float) -> bool:
+        if donor.entity_id == receiver.entity_id:
+            return True
         norm = NORMS[donor.norm]["kind"]
         receiver_good = receiver.reputation >= 0.5
         if norm == "generous":
@@ -576,17 +599,19 @@ class LandUseNormSimulation:
                 donor = self.cells[didx]
                 cooperation_attempts += 1
                 action = self.should_share(donor, receiver, dist)
-                donor.reputation = self.assess(donor, receiver, action)
+                same_entity = donor.entity_id == receiver.entity_id
+                if not same_entity:
+                    donor.reputation = self.assess(donor, receiver, action)
                 if not action:
                     donor.payoff -= 0.015 if receiver.critical else 0.004
                     continue
                 transfer = min(donor.surplus, receiver.deficit / max(0.1, 1.0 - 0.05 * dist))
-                received = transfer * max(0.55, 1.0 - 0.05 * dist)
+                received = transfer if same_entity else transfer * max(0.55, 1.0 - 0.05 * dist)
                 donor.storage -= transfer
                 donor.surplus = max(0.0, donor.storage - donor.storage_cap * 0.44)
                 receiver.deficit = max(0.0, receiver.deficit - received)
                 receiver.served += received
-                donor.payoff += 0.045 * (2.0 if receiver.critical else 1.0) - 0.018 * transfer
+                donor.payoff += 0.055 * (2.0 if receiver.critical else 1.0) - (0.008 if same_entity else 0.018) * transfer
                 receiver.payoff += 0.07 * received / max(receiver.demand, 1e-6)
                 cooperation_successes += 1
 
@@ -616,24 +641,38 @@ class LandUseNormSimulation:
             "cooperation_attempts": cooperation_attempts,
         }
 
-    def evolution_step(self) -> None:
+    def evolution_step(self) -> dict[str, int]:
         imitation_rate = float(self.config["imitation_rate"])
         mutation_rate = float(self.config["mutation_rate"])
         rebuild_rate = float(self.config["rebuild_rate"])
         new_norms = [cell.norm for cell in self.cells]
+        mutations = 0
+        imitations = 0
+        rebuilds = 0
+        redevelopment_landuse_changes = 0
         for idx, cell in enumerate(self.cells):
             if not cell.alive:
                 live_neighbors = [n for n in self.neighbor_indices(idx, 1) if self.cells[n].alive]
                 if live_neighbors and self.rng.random() < rebuild_rate:
                     parent = self.cells[self.rng.choice(live_neighbors)]
+                    if (
+                        parent.landuse != cell.landuse
+                        and self.rng.random() < float(self.config.get("rebuild_landuse_adoption", 0.55))
+                    ):
+                        self.update_landuse(idx, parent.landuse)
+                        redevelopment_landuse_changes += 1
                     cell.alive = True
                     cell.norm = parent.norm
+                    cell.entity_id = self.next_entity_id
+                    self.next_entity_id += 1
                     cell.health = 0.45
                     cell.storage = cell.storage_cap * 0.30
                     cell.reputation = 0.50
+                    rebuilds += 1
                 continue
             if self.rng.random() < mutation_rate:
                 new_norms[idx] = self.rng.randrange(len(NORMS))
+                mutations += 1
                 continue
             if self.rng.random() > imitation_rate:
                 continue
@@ -649,10 +688,108 @@ class LandUseNormSimulation:
             model_score = model.payoff + 0.30 * model.health + 0.12 * model.reputation
             if model_score > own_score + self.rng.uniform(0.01, 0.15):
                 new_norms[idx] = model.norm
+                imitations += 1
         for idx, norm in enumerate(new_norms):
             self.cells[idx].norm = norm
+        return {
+            "norm_mutations": mutations,
+            "norm_imitations": imitations,
+            "building_rebuilds": rebuilds,
+            "redevelopment_landuse_changes": redevelopment_landuse_changes,
+        }
 
-    def metrics(self, step: int, energy_stats: dict[str, float]) -> dict[str, Any]:
+    def landuse_transition_step(self) -> dict[str, int]:
+        base_rate = float(self.config.get("landuse_transition_rate", 0.004))
+        stress_bonus = float(self.config.get("landuse_stress_transition_bonus", 0.018))
+        changes = 0
+        for idx, cell in enumerate(self.cells):
+            if not cell.alive:
+                continue
+            service = cell.served / max(cell.demand, 1e-6)
+            rate = base_rate + stress_bonus * max(0.0, 0.78 - service)
+            if LAND_USES[cell.landuse]["critical"]:
+                rate *= 0.35
+            if self.rng.random() > rate:
+                continue
+            scores = [0.0] * len(LAND_USES)
+            for nidx in self.neighbor_indices(idx, 1):
+                neighbor = self.cells[nidx]
+                if not neighbor.alive:
+                    continue
+                n_service = neighbor.served / max(neighbor.demand, 1e-6)
+                scores[neighbor.landuse] += 0.40 + 0.50 * n_service + 0.25 * neighbor.health
+            scores[cell.landuse] += float(self.config.get("landuse_inertia", 1.35))
+            live_neighbor_landuses = {
+                self.cells[nidx].landuse
+                for nidx in self.neighbor_indices(idx, 1)
+                if self.cells[nidx].alive
+            }
+            if len(live_neighbor_landuses) >= 3:
+                scores[2] += 0.85
+            if cell.critical:
+                scores[3] += 1.60
+            target = max(range(len(scores)), key=lambda k: scores[k] + self.rng.uniform(0.0, 0.08))
+            if target != cell.landuse and scores[target] > scores[cell.landuse] + 0.15:
+                self.update_landuse(idx, target)
+                changes += 1
+        return {"landuse_changes": changes}
+
+    def merge_step(self) -> dict[str, int]:
+        merge_rate = float(self.config.get("merge_rate", 0.018))
+        max_entity_cells = int(self.config.get("max_entity_cells", 8))
+        sizes = self.entity_sizes()
+        events = 0
+        for idx, cell in enumerate(self.cells):
+            if not cell.alive or sizes.get(cell.entity_id, 0) >= max_entity_cells:
+                continue
+            if cell.health < 0.72 or cell.reputation < 0.45:
+                continue
+            if self.rng.random() > merge_rate:
+                continue
+            candidates = []
+            for nidx in self.neighbor_indices(idx, 1):
+                neighbor = self.cells[nidx]
+                if not neighbor.alive or neighbor.entity_id == cell.entity_id:
+                    continue
+                combined = sizes.get(cell.entity_id, 0) + sizes.get(neighbor.entity_id, 0)
+                if combined > max_entity_cells:
+                    continue
+                compatibility = 0.0
+                if neighbor.norm == cell.norm:
+                    compatibility += 0.55
+                if neighbor.landuse == cell.landuse or 2 in (neighbor.landuse, cell.landuse):
+                    compatibility += 0.35
+                compatibility += 0.15 * min(cell.reputation, neighbor.reputation)
+                compatibility += 0.15 * min(cell.health, neighbor.health)
+                if compatibility > 0.58:
+                    candidates.append((compatibility, nidx))
+            if not candidates:
+                continue
+            _, nidx = max(candidates, key=lambda item: item[0] + self.rng.uniform(0.0, 0.08))
+            neighbor = self.cells[nidx]
+            entity_a = cell.entity_id
+            entity_b = neighbor.entity_id
+            new_entity = self.next_entity_id
+            self.next_entity_id += 1
+            members = [
+                member
+                for member in self.cells
+                if member.alive and member.entity_id in (entity_a, entity_b)
+            ]
+            best = max(members, key=lambda member: member.payoff + member.health + member.reputation)
+            avg_reputation = sum(member.reputation for member in members) / len(members)
+            for member in members:
+                member.entity_id = new_entity
+                member.norm = best.norm
+                member.reputation = 0.55 * member.reputation + 0.45 * avg_reputation
+                member.payoff += 0.035
+            sizes.pop(entity_a, None)
+            sizes.pop(entity_b, None)
+            sizes[new_entity] = len(members)
+            events += 1
+        return {"merge_events": events}
+
+    def metrics(self, step: int, stats: dict[str, float]) -> dict[str, Any]:
         alive = [cell for cell in self.cells if cell.alive]
         critical = [cell for cell in self.cells if cell.critical]
         critical_alive = [cell for cell in critical if cell.alive and cell.health > 0.08]
@@ -669,10 +806,20 @@ class LandUseNormSimulation:
             "step": step,
             "alive_fraction": len(alive) / len(self.cells),
             "critical_survival": len(critical_alive) / max(1, len(critical)),
-            "served_fraction": energy_stats["served_fraction"],
-            "critical_service": energy_stats["critical_service"],
-            "cooperation_rate": energy_stats["cooperation_rate"],
-            "cooperation_attempts": energy_stats["cooperation_attempts"],
+            "critical_fraction": len(critical) / len(self.cells),
+            "served_fraction": stats["served_fraction"],
+            "critical_service": stats["critical_service"],
+            "cooperation_rate": stats["cooperation_rate"],
+            "cooperation_attempts": stats["cooperation_attempts"],
+            "norm_mutations": int(stats.get("norm_mutations", 0)),
+            "norm_imitations": int(stats.get("norm_imitations", 0)),
+            "building_rebuilds": int(stats.get("building_rebuilds", 0)),
+            "landuse_changes": int(stats.get("landuse_changes", 0)),
+            "redevelopment_landuse_changes": int(stats.get("redevelopment_landuse_changes", 0)),
+            "merge_events": int(stats.get("merge_events", 0)),
+            "entity_count": len(entity_sizes) if (entity_sizes := self.entity_sizes()) else 0,
+            "mean_entity_size": len(alive) / max(1, len(entity_sizes)),
+            "largest_entity_size": max(entity_sizes.values()) if entity_sizes else 0,
             "norm_frequencies": [
                 count / max(1, len(alive))
                 for count in norm_counts
@@ -686,9 +833,12 @@ class LandUseNormSimulation:
         }
 
     def step(self, step: int) -> dict[str, Any]:
-        energy_stats = self.energy_step(step)
-        self.evolution_step()
-        return self.metrics(step, energy_stats)
+        stats: dict[str, float] = self.energy_step(step)
+        stats.update(self.evolution_step())
+        tissue_stats = self.landuse_transition_step()
+        stats["landuse_changes"] = int(stats.get("redevelopment_landuse_changes", 0)) + int(tissue_stats["landuse_changes"])
+        stats.update(self.merge_step())
+        return self.metrics(step, stats)
 
     def run(self) -> SimulationResult:
         frames = []
@@ -725,7 +875,11 @@ def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: d
     height = panel + margin * 2 + footer
     image = Image.new("RGB", (width, height), (248, 250, 252))
     draw = ImageDraw.Draw(image)
-    titles = ["land-use tissue", "sharing norm / tribe", "service + health"]
+    entity_sizes: dict[int, int] = {}
+    for cell in cells:
+        if cell.alive:
+            entity_sizes[cell.entity_id] = entity_sizes.get(cell.entity_id, 0) + 1
+    titles = ["slow land-use tissue", "norm / entity", "service + health"]
     for pidx, title in enumerate(titles):
         x0 = margin + pidx * (panel + gap)
         y0 = margin + 16
@@ -736,7 +890,9 @@ def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: d
             x = x0 + col * scale
             y = y0 + row * scale
             if pidx == 0:
-                color = LAND_USES[landuse_map[idx]]["color"]
+                color = LAND_USES[cell.landuse]["color"]
+                if not cell.alive:
+                    color = blend(color, 0.35)
             elif pidx == 1:
                 color = NORMS[cell.norm]["color"] if cell.alive else (203, 213, 225)
             else:
@@ -750,6 +906,8 @@ def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: d
                 else:
                     color = blend((220, 38, 38), 0.55 + 0.25 * cell.health)
             draw.rectangle([x, y, x + scale - 1, y + scale - 1], fill=color)
+            if pidx == 1 and cell.alive and entity_sizes.get(cell.entity_id, 0) > 1:
+                draw.rectangle([x + 1, y + 1, x + scale - 2, y + scale - 2], outline=(15, 23, 42))
             if cell.critical and pidx != 0:
                 draw.rectangle(
                     [x + 2, y + 2, x + scale - 3, y + scale - 3],
@@ -761,7 +919,8 @@ def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: d
     footer_text = (
         f"step={metric['step']:03d} served={metric['served_fraction']:.2f} "
         f"critical={metric['critical_survival']:.2f} coop={metric['cooperation_rate']:.2f} "
-        f"top_norm={NORMS[top_norm]['key']} {norm_freq[top_norm]:.2f}"
+        f"entities={metric['entity_count']} max_entity={metric['largest_entity_size']} "
+        f"landuse_delta={metric['landuse_changes']} top_norm={NORMS[top_norm]['key']} {norm_freq[top_norm]:.2f}"
     )
     draw.text((margin, height - footer + 16), footer_text, fill=(15, 23, 42))
     return image
@@ -782,15 +941,25 @@ def write_csv(metrics: list[dict[str, Any]], path: Path) -> None:
             "step",
             "alive_fraction",
             "critical_survival",
+            "critical_fraction",
             "served_fraction",
             "critical_service",
             "cooperation_rate",
             "cooperation_attempts",
+            "norm_mutations",
+            "norm_imitations",
+            "building_rebuilds",
+            "landuse_changes",
+            "redevelopment_landuse_changes",
+            "merge_events",
+            "entity_count",
+            "mean_entity_size",
+            "largest_entity_size",
         ] + [f"norm_{norm['key']}" for norm in NORMS]
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         for row in metrics:
-            flat = {field: row[field] for field in fields[:7]}
+            flat = {field: row[field] for field in fields[:17]}
             for idx, norm in enumerate(NORMS):
                 flat[f"norm_{norm['key']}"] = row["norm_frequencies"][idx]
             writer.writerow(flat)

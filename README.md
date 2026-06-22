@@ -4,15 +4,16 @@ This project models a neighborhood as an artificial-life energy system. The
 important conceptual correction is:
 
 ```text
-agent = building
-tissue = land-use context
+agent = building or merged building entity
+tissue = slowly changing land-use context
 tribe = energy-sharing norm / protocol
 ```
 
 The model no longer treats solar, load, and storage as three biological
-species. Land use is the relatively stable urban tissue. Buildings then decide
-which cooperation rule to follow, imitate successful neighbors, mutate, build
-reputation, and survive or fail under energy stress.
+species. Land use is now a slow urban tissue variable rather than a permanent
+background map. Buildings decide which cooperation rule to follow, imitate
+successful neighbors, mutate, build reputation, survive or fail under energy
+stress, and sometimes merge into larger entities.
 
 ## Why This Version Exists
 
@@ -30,8 +31,9 @@ to produce interpretable research questions:
 
 Each grid cell is one building agent with:
 
-- fixed `landuse`
+- slowly changing `landuse`
 - evolving `norm`
+- `entity_id`, which can be shared by multiple merged buildings
 - `reputation`
 - `health`
 - `storage`
@@ -49,7 +51,8 @@ Each grid cell is one building agent with:
 | M | mixed use | blended demand and blended solar potential |
 | K | critical civic | critical-load survival target |
 
-Land use is fixed during a run. It is the "tissue" layer.
+Land use changes more slowly than norms or hourly energy service. It is the
+"tissue" layer, but it can adapt under sustained neighborhood pressure.
 
 ## Norm Tribes
 
@@ -114,6 +117,11 @@ Each hour:
 5. Unserved demand damages health, especially around critical loads.
 6. Buildings imitate nearby norms with higher payoff, reputation, and health.
 7. Occasional mutation introduces alternative norms.
+8. Stressed parcels can slowly transition toward better-performing nearby
+   land-use tissue.
+9. Neighboring buildings can merge into a larger entity. A merged entity shares
+   one organization-level norm and can internally reallocate energy with lower
+   loss.
 
 A solar shock is applied during the middle of the run to test resilience.
 
