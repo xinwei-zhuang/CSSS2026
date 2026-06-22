@@ -12,6 +12,7 @@ __pycache__/
 
 # Model outputs
 models/
+outputs/
 *.npy
 *.pt
 *.pth
