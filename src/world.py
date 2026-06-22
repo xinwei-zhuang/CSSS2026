@@ -156,6 +156,9 @@ class World:
         for feature in self.features:
             feature.before_step(self)
 
+        if self.config.city_mode and hasattr(group, "set_city_environment_phase"):
+            group.set_city_environment_phase(self.steps_taken)
+
         # Calculations
         steps_before = self.state.get("steps_before_update", 0)
         steps_per = self.state.get("steps_per_update", 1)
@@ -233,6 +236,10 @@ class World:
             seed_pts = all_coords[seed_idxs]
             init_xs = seed_pts[:, :, :, 0]
             init_ys = seed_pts[:, :, :, 1]
+        elif config.seed_dist == "city_anchors":
+            init_xs, init_ys = self._city_anchor_seed_points(config)
+        else:
+            raise ValueError(f"Unknown seed_dist: {config.seed_dist}")
 
         batch_indices = (
             torch.arange(config.pool_size)
@@ -253,11 +260,14 @@ class World:
         if config.seed_mode == "solid":
             seed_vals = 1.0
         elif config.seed_mode == "random":
-            seed_vals = torch.randn(
-                (config.n_ncas, self.seed_dim),
-                device=config.device,
-                dtype=self.dtype,
-            )  # [N, S]
+            if config.city_mode:
+                seed_vals = self._city_seed_vectors(config)
+            else:
+                seed_vals = torch.randn(
+                    (config.n_ncas, self.seed_dim),
+                    device=config.device,
+                    dtype=self.dtype,
+                )  # [N, S]
 
             # Handle loading
             # TODO: This is a tad suspicious isn't it...
@@ -285,6 +295,84 @@ class World:
         self.pool[:, : config.alive_dim] /= self.pool[:, : config.alive_dim].sum(
             dim=1, keepdim=True
         )
+
+    def _city_seed_vectors(self, config: Config) -> torch.Tensor:
+        """Structured initial cell states for city tribes.
+
+        The first three NCAs are interpreted as:
+        0. solar-rich / low-rise support tissue
+        1. dense high-load / commercial tissue
+        2. storage / critical-support tissue
+        Extra NCAs get small random variants.
+        """
+        archetypes = torch.randn(
+            (config.n_ncas, self.seed_dim),
+            device=config.device,
+            dtype=self.dtype,
+        ) * 0.08
+
+        base = torch.tensor(
+            [
+                [0.90, -0.25, 0.35, -0.10],
+                [-0.15, 0.90, -0.20, 0.35],
+                [0.20, 0.10, 0.95, -0.35],
+            ],
+            device=config.device,
+            dtype=self.dtype,
+        )
+        state_dim = min(config.cell_state_dim, base.shape[1])
+        for i in range(min(config.n_ncas, base.shape[0])):
+            archetypes[i, :state_dim] = base[i, :state_dim]
+            if config.cell_hidden_dim > 0:
+                start = config.cell_state_dim
+                stop = min(self.seed_dim, start + config.cell_hidden_dim)
+                archetypes[i, start:stop] = (i + 1) / max(1, config.n_ncas)
+
+        return archetypes
+
+    def _city_anchor_seed_points(self, config: Config) -> tuple[torch.Tensor, torch.Tensor]:
+        """Seed each NCA around a persistent city niche."""
+        height, width = config.grid_size
+        anchors = torch.tensor(
+            [
+                [int(height * 0.24), int(width * 0.72)],  # solar support tissue
+                [int(height * 0.72), int(width * 0.24)],  # dense load tissue
+                [int(height * 0.50), int(width * 0.50)],  # storage / support tissue
+            ],
+            device=config.device,
+        )
+        if config.n_ncas > anchors.shape[0]:
+            angles = torch.linspace(
+                0,
+                2 * torch.pi,
+                config.n_ncas - anchors.shape[0] + 1,
+                device=config.device,
+            )[:-1]
+            radius = max(1, min(height, width) // 4)
+            center = torch.tensor([height // 2, width // 2], device=config.device)
+            ring = torch.stack(
+                [
+                    center[0] + torch.round(torch.sin(angles) * radius).long(),
+                    center[1] + torch.round(torch.cos(angles) * radius).long(),
+                ],
+                dim=1,
+            )
+            anchors = torch.cat([anchors, ring], dim=0)
+        anchors = anchors[: config.n_ncas]
+        anchors[:, 0] = anchors[:, 0].clamp(0, height - 1)
+        anchors[:, 1] = anchors[:, 1].clamp(0, width - 1)
+
+        jitter = torch.randint(
+            -1,
+            2,
+            (config.pool_size, config.n_ncas, config.n_seeds, 2),
+            device=config.device,
+        )
+        pts = anchors.view(1, config.n_ncas, 1, 2) + jitter
+        pts[..., 0] = pts[..., 0].clamp(0, height - 1)
+        pts[..., 1] = pts[..., 1].clamp(0, width - 1)
+
+        return pts[..., 0], pts[..., 1]
 
     def _build_features(self, config):
         features = []

@@ -23,7 +23,7 @@ class Config:
     cell_hidden_dim: int = 4
 
     # New world paradigm
-    seed_dist: Literal["scatter"] = "scatter"
+    seed_dist: Literal["scatter", "city_anchors"] = "scatter"
     # Whether it's set to 1 in everything or random noise
     seed_mode: Literal["solid", "random"] = "random"
     alive_visible: bool = True  # Whether NCAs can see where things are alive
@@ -56,6 +56,13 @@ class Config:
 
     # Sun
     sun_update_epoch_wait: int = 0
+
+    # City Petri Dish extension
+    city_mode: bool = False
+    city_daily_cycle: bool = False
+    city_cycle_period: int = 24
+    city_environment_strength: float = 0.35
+    city_hypercycle_gamma: float = 0.0
 
     # Multi-world
     steps_before_update: int = 0

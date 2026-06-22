@@ -1,4 +1,5 @@
 import os
+import math
 from typing import Any
 
 import numpy as np
@@ -213,6 +214,11 @@ class CASunGroup:
         self.cell_state_dim = config.cell_state_dim
         self.cell_hidden_dim = config.cell_hidden_dim
         self.softmax_temp = config.softmax_temp
+        self.city_mode = config.city_mode
+        self.city_daily_cycle = config.city_daily_cycle
+        self.city_cycle_period = config.city_cycle_period
+        self.city_environment_strength = config.city_environment_strength
+        self.city_hypercycle_gamma = config.city_hypercycle_gamma
 
         # Make list of proposed upates and then iterate through to find total strengths
         # This is marking what you are fighting, sunshine is idx 0
@@ -270,7 +276,10 @@ class CASunGroup:
         Args:
             config: Configuration object.
         """
-        sun_vec = torch.randn(self.out_dim, device=config.device)
+        if config.city_mode:
+            sun_vec = self._city_environment_vector(daylight=0.5)
+        else:
+            sun_vec = torch.randn(self.out_dim, device=config.device)
 
         sun_vec[self.hidden_idxs - self.N] = 0.0
         sun_vec /= sun_vec.norm()
@@ -279,6 +288,40 @@ class CASunGroup:
         self.sun_update.requires_grad = True
 
         self.sun_optim = torch.optim.AdamW([self.sun_update], lr=config.learning_rate)
+
+    def _city_environment_vector(self, daylight: float) -> torch.Tensor:
+        """Background competitor for an urban energy petri dish.
+
+        The first half of state channels are attack channels and the second half
+        are defense channels. Daylight favors solar-rich tissue; night favors
+        storage/defense pressure. The vector is still abstract, but its rhythm
+        makes the homogeneous background less static than random noise.
+        """
+        vec = torch.zeros(self.out_dim, device=self.device)
+        attack_dim = max(1, self.cell_state_dim // 2)
+        defense_dim = max(1, self.cell_state_dim // 2)
+
+        vec[:attack_dim] = self.city_environment_strength * (1.0 - daylight)
+        vec[attack_dim : attack_dim + defense_dim] = self.city_environment_strength * daylight
+
+        if self.cell_hidden_dim > 0:
+            hidden_start = self.cell_state_dim
+            hidden_stop = min(self.out_dim, hidden_start + self.cell_hidden_dim)
+            hidden = torch.linspace(-1.0, 1.0, hidden_stop - hidden_start, device=self.device)
+            vec[hidden_start:hidden_stop] = 0.12 * hidden * (2.0 * daylight - 1.0)
+
+        return vec
+
+    def set_city_environment_phase(self, step: int) -> None:
+        if not (self.city_mode and self.city_daily_cycle):
+            return
+        phase = (step % max(1, self.city_cycle_period)) / max(1, self.city_cycle_period)
+        daylight = max(0.0, math.sin(math.pi * phase))
+        with torch.no_grad():
+            sun_vec = self._city_environment_vector(daylight=daylight)
+            sun_vec[self.hidden_idxs - self.N] = 0.0
+            sun_vec = sun_vec / sun_vec.norm().clamp_min(1e-8)
+            self.sun_update.copy_(rearrange(sun_vec, "oc -> () oc () ()").to(self.sun_update.dtype))
 
     def _update_sun(self, step: bool = True):
         if step:
@@ -540,6 +583,16 @@ class CASunGroup:
         #     0
         # )
         # ------------------------------------
+
+        if self.city_mode and self.city_hypercycle_gamma > 0 and N > 1:
+            sun_aliveness = alivenesses[:1]
+            nca_alivenesses = alivenesses[1:]
+            next_nca_aliveness = torch.roll(nca_alivenesses, shifts=-1, dims=0)
+            local_bonus = self.city_hypercycle_gamma * next_nca_aliveness.detach()
+            alivenesses = torch.cat(
+                [sun_aliveness, nca_alivenesses + local_bonus],
+                dim=0,
+            )
 
         # Go down into batch
         batch_alive = alivenesses.view(M, B, -1).sum(-1)  # [N, B]
