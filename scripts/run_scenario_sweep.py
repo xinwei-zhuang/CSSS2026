@@ -69,8 +69,10 @@ def classify(row: dict[str, Any]) -> str:
         return "collapse"
     if row["final_alive"] < 0.75 or row["final_critical"] < 0.75:
         return "partial recovery"
+    if row["final_hierarchy_coverage"] >= 0.65 and row["final_hierarchy_alignment"] >= 0.60:
+        return "hierarchical norm order"
     if row["top_norm_freq"] >= 0.28:
-        return "protocol dominance"
+        return "individual norm dominance"
     if row["last72_alive_range"] <= 0.03 and row["final_critical"] >= 0.90:
         return "stable mixed recovery"
     return "recovering mixed state"
@@ -115,12 +117,13 @@ def summarize(
         - min(row["alive_fraction"] for row in last72),
         "last72_served_range": max(row["served_fraction"] for row in last72)
         - min(row["served_fraction"] for row in last72),
-        "final_entity_count": final.get("entity_count", 0),
-        "final_mean_entity_size": final.get("mean_entity_size", 0.0),
-        "final_largest_entity_size": final.get("largest_entity_size", 0),
-        "landuse_changes_total": sum(row.get("landuse_changes", 0) for row in metrics),
-        "redevelopment_landuse_changes_total": sum(row.get("redevelopment_landuse_changes", 0) for row in metrics),
-        "merge_events_total": sum(row.get("merge_events", 0) for row in metrics),
+        "final_hierarchy_count": final.get("hierarchy_count", 0),
+        "final_hierarchy_coverage": final.get("hierarchy_coverage", 0.0),
+        "final_hierarchy_alignment": final.get("hierarchy_alignment", 0.0),
+        "hierarchy_births_total": sum(row.get("hierarchy_births", 0) for row in metrics),
+        "hierarchy_switches_total": sum(row.get("hierarchy_switches", 0) for row in metrics),
+        "hierarchy_dissolutions_total": sum(row.get("hierarchy_dissolutions", 0) for row in metrics),
+        "hierarchy_adoptions_total": sum(row.get("hierarchy_adoptions", 0) for row in metrics),
         "building_rebuilds_total": sum(row.get("building_rebuilds", 0) for row in metrics),
         "top_norm": NORMS[top_idx]["key"],
         "top_norm_name": NORMS[top_idx]["name"],
@@ -129,6 +132,7 @@ def summarize(
     }
     for idx, norm in enumerate(NORMS):
         row[f"norm_{norm['key']}"] = norm_freq[idx]
+        row[f"hierarchy_{norm['key']}"] = final["hierarchy_norm_frequencies"][idx]
     row["outcome"] = classify(row)
     return row
 
@@ -229,13 +233,13 @@ def write_summary_png(rows: list[dict[str, Any]], path: Path) -> None:
     draw.text((790, 400), "x: mild/base/severe; dot size: radius; color: final alive", fill=(71, 85, 105))
 
     scatter2 = (790, 520, 1210, 760)
-    draw_axis(draw, scatter2, "norm diversity vs final critical survival")
+    draw_axis(draw, scatter2, "hierarchy coverage vs final critical survival")
     for row in rows:
-        x = scatter2[0] + round((scatter2[2] - scatter2[0]) * row["norm_entropy"])
+        x = scatter2[0] + round((scatter2[2] - scatter2[0]) * row["final_hierarchy_coverage"])
         y = scatter2[3] - round((scatter2[3] - scatter2[1]) * row["final_critical"])
-        color = value_color(row["top_norm_freq"], (14, 165, 233), (234, 88, 12))
+        color = value_color(row["final_hierarchy_alignment"], (14, 165, 233), (234, 88, 12))
         draw.ellipse([x - 5, y - 5, x + 5, y + 5], fill=color, outline=(15, 23, 42))
-    draw.text((790, 770), "x: mixed norms; color: dominant norm frequency", fill=(71, 85, 105))
+    draw.text((790, 770), "x: hierarchy coverage; color: hierarchy alignment", fill=(71, 85, 105))
 
     image.save(path)
 
@@ -258,14 +262,14 @@ def write_outcome_map(rows: list[dict[str, Any]], path: Path) -> None:
             ]
             value = mean(row["final_critical"] for row in subset)
             alive = mean(row["final_alive"] for row in subset)
-            entropy = mean(row["norm_entropy"] for row in subset)
+            hierarchy = mean(row["final_hierarchy_coverage"] for row in subset)
             color = value_color(value, (248, 113, 113), (34, 197, 94))
             x = start_x + sx * cell_w
             y = start_y + ry * cell_h
             draw.rectangle([x, y, x + cell_w - 10, y + cell_h - 12], fill=color, outline=(15, 23, 42))
             draw.text((x + 10, y + 12), f"critical {value:.2f}", fill=(15, 23, 42))
             draw.text((x + 10, y + 34), f"alive {alive:.2f}", fill=(15, 23, 42))
-            draw.text((x + 10, y + 56), f"diversity {entropy:.2f}", fill=(15, 23, 42))
+            draw.text((x + 10, y + 56), f"hierarchy {hierarchy:.2f}", fill=(15, 23, 42))
 
     outcome_counts: dict[str, int] = {}
     for row in rows:

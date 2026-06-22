@@ -4,16 +4,17 @@ This project models a neighborhood as an artificial-life energy system. The
 important conceptual correction is:
 
 ```text
-agent = building or merged building entity
-tissue = slowly changing land-use context
+agent = building
+tissue = fixed land-use attribute of each cell
 tribe = energy-sharing norm / protocol
 ```
 
 The model no longer treats solar, load, and storage as three biological
-species. Land use is now a slow urban tissue variable rather than a permanent
-background map. Buildings decide which cooperation rule to follow, imitate
+species. Land use is a cell attribute that shapes load profile, roof area, and
+storage assumptions. Buildings decide which cooperation rule to follow, imitate
 successful neighbors, mutate, build reputation, survive or fail under energy
-stress, and sometimes merge into larger entities.
+stress, and can slowly rebuild after failure. Block-level norms can emerge from
+local individual norm success.
 
 ## Why This Version Exists
 
@@ -21,19 +22,18 @@ The earlier PD-NCA visualization produced spatial patterns, but it did not say
 much beyond "the strongest energy phenotype spreads." This version is designed
 to produce interpretable research questions:
 
-- Which sharing norms survive in residential, commercial, mixed-use, and
-  critical civic land-use tissues?
+- Which sharing norms survive in residential, commercial, and industrial cells?
 - Does cooperation cluster around critical loads?
 - Do large-area commercial buildings become generators for surrounding cells?
-- Does mixed land use stabilize cooperation and critical-load survival?
+- Do successful individual norms become higher-level block norms?
 
 ## State Variables
 
 Each grid cell is one building agent with:
 
-- slowly changing `landuse`
+- fixed `landuse`
 - evolving `norm`
-- `entity_id`, which can be shared by multiple merged buildings
+- `block_id`, used for emergent hierarchical norms
 - `reputation`
 - `health`
 - `storage`
@@ -48,11 +48,10 @@ Each grid cell is one building agent with:
 | --- | --- | --- |
 | R | residential | evening-biased demand, smaller roof area |
 | C | commercial | daytime demand, larger roof area |
-| M | mixed use | blended demand and blended solar potential |
-| K | critical civic | critical-load survival target |
+| I | industrial | flatter high demand, larger roof/storage potential |
 
-Land use changes more slowly than norms or hourly energy service. It is the
-"tissue" layer, but it can adapt under sustained neighborhood pressure.
+Land use does not evolve in the current model. It is the cell-level tissue
+attribute that changes the building's demand profile and solar potential.
 
 ## Norm Tribes
 
@@ -117,11 +116,11 @@ Each hour:
 5. Unserved demand damages health, especially around critical loads.
 6. Buildings imitate nearby norms with higher payoff, reputation, and health.
 7. Occasional mutation introduces alternative norms.
-8. Stressed parcels can slowly transition toward better-performing nearby
-   land-use tissue.
-9. Neighboring buildings can merge into a larger entity. A merged entity shares
-   one organization-level norm and can internally reallocate energy with lower
-   loss.
+8. Failed buildings can rebuild slowly, usually copying nearby successful or
+   locally institutionalized norms.
+9. A block-level hierarchical norm can emerge when one norm is both common and
+   successful inside a local block. Once formed, it increases conformity and
+   makes same-block sharing more efficient.
 
 A solar shock is applied during the middle of the run to test resilience.
 
@@ -171,10 +170,11 @@ It contains:
 
 Read the outputs as a comparison between three layers:
 
-- land-use tissue: what the city physically is
-- norm tribe: what cooperation protocol buildings adopt
+- land-use attribute: what load/generation context each cell has
+- individual norm tribe: what cooperation protocol each building adopts
+- hierarchical norm: which block-level rule emerges from local norm competition
 - service/health: whether energy demand and critical loads survive
 
 The most useful result is not the final color pattern alone. The useful result
-is the relation between land use, norm frequency, cooperation rate, and
-critical-load survival over time.
+is the relation between land use, individual norm frequency, hierarchical norm
+coverage/alignment, cooperation rate, and critical-load survival over time.

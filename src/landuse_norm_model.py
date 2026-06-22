@@ -4,7 +4,7 @@ import csv
 import json
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,37 +20,24 @@ LAND_USES = [
         "demand_scale": 0.88,
         "roof_kind": "residential",
         "storage_cap": 1.70,
-        "critical": False,
     },
     {
         "key": "C",
         "name": "commercial",
         "color": (203, 153, 91),
         "demand_kind": "commercial",
-        "demand_scale": 1.22,
+        "demand_scale": 1.18,
         "roof_kind": "commercial",
-        "storage_cap": 1.45,
-        "critical": False,
+        "storage_cap": 1.65,
     },
     {
-        "key": "M",
-        "name": "mixed use",
+        "key": "I",
+        "name": "industrial",
         "color": (156, 169, 205),
-        "demand_kind": "mixed",
-        "demand_scale": 1.00,
-        "roof_kind": "mixed",
-        "storage_cap": 2.10,
-        "critical": False,
-    },
-    {
-        "key": "K",
-        "name": "critical civic",
-        "color": (204, 101, 122),
-        "demand_kind": "commercial",
-        "demand_scale": 0.92,
-        "roof_kind": "mixed",
-        "storage_cap": 3.80,
-        "critical": True,
+        "demand_kind": "industrial",
+        "demand_scale": 1.35,
+        "roof_kind": "industrial",
+        "storage_cap": 2.45,
     },
 ]
 
@@ -119,8 +106,9 @@ NORMS = [
 class Cell:
     landuse: int
     norm: int
-    entity_id: int = -1
+    block_id: int
     alive: bool = True
+    critical: bool = False
     reputation: float = 0.62
     health: float = 1.0
     storage: float = 0.0
@@ -130,7 +118,6 @@ class Cell:
     deficit: float = 0.0
     surplus: float = 0.0
     payoff: float = 0.0
-    critical: bool = False
 
 
 @dataclass
@@ -204,6 +191,33 @@ def fallback_demand(kind: str) -> list[float]:
             0.44,
             0.42,
         ]
+    elif kind == "industrial":
+        raw = [
+            0.72,
+            0.70,
+            0.68,
+            0.67,
+            0.70,
+            0.78,
+            0.94,
+            1.08,
+            1.16,
+            1.22,
+            1.24,
+            1.22,
+            1.18,
+            1.16,
+            1.14,
+            1.12,
+            1.08,
+            1.02,
+            0.94,
+            0.86,
+            0.80,
+            0.76,
+            0.74,
+            0.72,
+        ]
     else:
         raw = [
             0.70,
@@ -263,14 +277,13 @@ def load_demand_curves(path: str, sample_size: int) -> tuple[dict[str, list[floa
             )
         else:
             out[kind] = fallback_demand(kind)
-    out["mixed"] = normalize_mean(
-        [(out["residential"][h] + out["commercial"][h]) * 0.5 for h in range(24)]
-    )
+    out["industrial"] = fallback_demand("industrial")
+    counts["industrial"] = 0
     return out, counts
 
 
 def estimate_roof_area(path: str, sample_size: int, usable_fraction: float) -> dict[str, float]:
-    fallback = {"residential": 125.0, "commercial": 620.0}
+    fallback = {"residential": 125.0, "commercial": 620.0, "industrial": 980.0}
     csv_path = Path(path)
     if not csv_path.exists():
         return fallback
@@ -294,10 +307,12 @@ def estimate_roof_area(path: str, sample_size: int, usable_fraction: float) -> d
             counts[kind] += 1
             if counts["residential"] >= target_each and counts["commercial"] >= target_each:
                 break
-    return {
+    out = {
         kind: sums[kind] / counts[kind] if counts[kind] else fallback[kind]
-        for kind in fallback
+        for kind in sums
     }
+    out["industrial"] = max(fallback["industrial"], out["commercial"] * 1.35)
+    return out
 
 
 def read_epw_24h(path: str, month: int, day: int) -> tuple[list[float], list[float], str]:
@@ -358,14 +373,7 @@ def load_data(config: dict[str, Any]) -> DataBundle:
         int(config["solar_day"]),
     )
     pv = pv_per_m2_kw(ghi, temp, float(config["pv_efficiency"]))
-    raw_solar = {
-        "residential": [v * roof["residential"] for v in pv],
-        "commercial": [v * roof["commercial"] for v in pv],
-    }
-    raw_solar["mixed"] = [
-        (raw_solar["residential"][h] + raw_solar["commercial"][h]) * 0.5
-        for h in range(24)
-    ]
+    raw_solar = {kind: [v * roof[kind] for v in pv] for kind in roof}
     reference = sum(sum(v) / 24 for v in raw_solar.values()) / len(raw_solar)
     if reference <= 0:
         reference = 1.0
@@ -392,17 +400,25 @@ class LandUseNormSimulation:
         self.data = data
         self.size = int(config["grid_size"])
         self.rng = random.Random(int(config["seed"]))
+        self.block_size = int(config.get("block_size", 6))
+        self.block_rows = math.ceil(self.size / self.block_size)
+        self.block_cols = math.ceil(self.size / self.block_size)
+        self.block_count = self.block_rows * self.block_cols
+        self.block_norms = [-1 for _ in range(self.block_count)]
+        self.block_strength = [0.0 for _ in range(self.block_count)]
+        self.block_age = [0 for _ in range(self.block_count)]
         self.cells: list[Cell] = []
         self.landuse_map = self._make_landuse_map()
-        self.next_entity_id = self.size * self.size
         self._init_cells()
+
+    def block_id_for(self, row: int, col: int) -> int:
+        return (row // self.block_size) * self.block_cols + (col // self.block_size)
 
     def _make_landuse_map(self) -> list[int]:
         anchors = [
-            (0.28, 0.70, 0),
-            (0.68, 0.25, 1),
-            (0.55, 0.55, 2),
-            (0.42, 0.43, 3),
+            (0.27, 0.72, 0),
+            (0.72, 0.25, 1),
+            (0.58, 0.62, 2),
         ]
         landuse = []
         for row in range(self.size):
@@ -412,12 +428,8 @@ class LandUseNormSimulation:
                     rr = ar * self.size
                     cc = ac * self.size
                     dist = math.hypot(row - rr, col - cc)
-                    bias = self.rng.uniform(-4.5, 4.5)
-                    if kind == 3:
-                        bias += 3.0
-                    scores.append((dist + bias, kind))
+                    scores.append((dist + self.rng.uniform(-4.0, 4.0), kind))
                 landuse.append(min(scores)[1])
-
         for _ in range(3):
             new_map = landuse[:]
             for idx in range(len(landuse)):
@@ -431,19 +443,23 @@ class LandUseNormSimulation:
 
     def _init_cells(self) -> None:
         self.cells = []
+        critical_fraction = float(self.config.get("critical_fraction", 0.10))
         for idx, landuse in enumerate(self.landuse_map):
+            row, col = divmod(idx, self.size)
             norm = self.initial_norm_for_landuse(landuse)
             spec = LAND_USES[landuse]
             storage_cap = spec["storage_cap"] * self.rng.uniform(0.78, 1.22)
+            center_bias = math.exp(-math.hypot(row - self.size * 0.34, col - self.size * 0.34) / (self.size * 0.18))
+            critical_prob = critical_fraction * (0.55 + 2.8 * center_bias)
             cell = Cell(
                 landuse=landuse,
                 norm=norm,
-                entity_id=idx,
+                block_id=self.block_id_for(row, col),
                 reputation=self.rng.uniform(0.48, 0.82),
                 health=self.rng.uniform(0.88, 1.0),
                 storage_cap=storage_cap,
                 storage=storage_cap * self.rng.uniform(0.38, 0.72),
-                critical=bool(spec["critical"]),
+                critical=self.rng.random() < critical_prob,
             )
             self.cells.append(cell)
 
@@ -452,10 +468,8 @@ class LandUseNormSimulation:
             options = [0, 2, 7, 2]
         elif landuse == 1:
             options = [1, 6, 6, 2]
-        elif landuse == 2:
-            options = [2, 3, 5, 7]
         else:
-            options = [5, 2, 3, 5]
+            options = [1, 5, 6, 3]
         return self.rng.choice(options)
 
     def neighbor_indices(self, idx: int, radius: int) -> list[int]:
@@ -471,6 +485,9 @@ class LandUseNormSimulation:
                     out.append(rr * self.size + cc)
         return out
 
+    def block_norm(self, cell: Cell) -> int:
+        return self.block_norms[cell.block_id]
+
     def landuse_demand(self, landuse: int, hour: int) -> float:
         spec = LAND_USES[landuse]
         curve = self.data.demand_curves[spec["demand_kind"]]
@@ -484,45 +501,30 @@ class LandUseNormSimulation:
             shock = float(self.config["solar_shock_factor"])
         return curve[hour] * shock
 
-    def update_landuse(self, idx: int, landuse: int) -> None:
-        cell = self.cells[idx]
-        old_cap = cell.storage_cap
-        spec = LAND_USES[landuse]
-        cell.landuse = landuse
-        self.landuse_map[idx] = landuse
-        cell.critical = bool(spec["critical"])
-        cell.storage_cap = spec["storage_cap"] * self.rng.uniform(0.90, 1.12)
-        if old_cap > 0:
-            cell.storage = min(cell.storage_cap, cell.storage * cell.storage_cap / old_cap)
-
-    def entity_sizes(self) -> dict[int, int]:
-        sizes: dict[int, int] = {}
-        for cell in self.cells:
-            if cell.alive:
-                sizes[cell.entity_id] = sizes.get(cell.entity_id, 0) + 1
-        return sizes
-
     def should_share(self, donor: Cell, receiver: Cell, distance: float) -> bool:
-        if donor.entity_id == receiver.entity_id:
-            return True
         norm = NORMS[donor.norm]["kind"]
         receiver_good = receiver.reputation >= 0.5
+        block_norm = self.block_norm(donor)
+        institutional_bonus = block_norm == donor.norm and self.block_strength[donor.block_id] > 0.35
+        threshold_shift = 0.10 if institutional_bonus else 0.0
+        if institutional_bonus and receiver.block_id == donor.block_id:
+            return donor.storage > donor.storage_cap * 0.22
         if norm == "generous":
-            return donor.storage > donor.storage_cap * 0.20
+            return donor.storage > donor.storage_cap * (0.20 - threshold_shift)
         if norm == "selfish":
-            return receiver.critical and donor.surplus > donor.demand * 0.65
+            return receiver.critical and donor.surplus > donor.demand * (0.65 - threshold_shift)
         if norm == "standing":
             return receiver_good or receiver.critical
         if norm == "stern":
             return receiver_good or receiver.critical
         if norm == "shunning":
-            return receiver_good and donor.storage > donor.storage_cap * 0.42
+            return receiver_good and donor.storage > donor.storage_cap * (0.42 - threshold_shift)
         if norm == "critical":
-            return receiver.critical or (receiver_good and donor.storage > donor.storage_cap * 0.35)
+            return receiver.critical or (receiver_good and donor.storage > donor.storage_cap * (0.35 - threshold_shift))
         if norm == "market":
-            return receiver.deficit * (2.0 if receiver.critical else 1.0) > 0.30 + 0.08 * distance
+            return receiver.deficit * (2.0 if receiver.critical else 1.0) > 0.30 + 0.08 * distance - threshold_shift
         if norm == "local":
-            return receiver_good and distance <= 2.25
+            return receiver_good and distance <= (2.25 + (0.75 if institutional_bonus else 0.0))
         return False
 
     def assess(self, donor: Cell, receiver: Cell, action: bool) -> float:
@@ -599,19 +601,24 @@ class LandUseNormSimulation:
                 donor = self.cells[didx]
                 cooperation_attempts += 1
                 action = self.should_share(donor, receiver, dist)
-                same_entity = donor.entity_id == receiver.entity_id
-                if not same_entity:
-                    donor.reputation = self.assess(donor, receiver, action)
+                donor.reputation = self.assess(donor, receiver, action)
                 if not action:
-                    donor.payoff -= 0.015 if receiver.critical else 0.004
+                    donor.payoff -= 0.018 if receiver.critical else 0.006
                     continue
+                same_block_institution = (
+                    donor.block_id == receiver.block_id
+                    and self.block_norms[donor.block_id] == donor.norm
+                    and self.block_strength[donor.block_id] > 0.35
+                )
                 transfer = min(donor.surplus, receiver.deficit / max(0.1, 1.0 - 0.05 * dist))
-                received = transfer if same_entity else transfer * max(0.55, 1.0 - 0.05 * dist)
+                received = transfer * (0.98 if same_block_institution else max(0.55, 1.0 - 0.05 * dist))
                 donor.storage -= transfer
                 donor.surplus = max(0.0, donor.storage - donor.storage_cap * 0.44)
                 receiver.deficit = max(0.0, receiver.deficit - received)
                 receiver.served += received
-                donor.payoff += 0.055 * (2.0 if receiver.critical else 1.0) - (0.008 if same_entity else 0.018) * transfer
+                donor.payoff += 0.052 * (2.0 if receiver.critical else 1.0) - 0.014 * transfer
+                if same_block_institution:
+                    donor.payoff += 0.020
                 receiver.payoff += 0.07 * received / max(receiver.demand, 1e-6)
                 cooperation_successes += 1
 
@@ -626,8 +633,14 @@ class LandUseNormSimulation:
             if not cell.alive:
                 continue
             unmet = cell.deficit / max(cell.demand, 1e-6)
-            cell.health = max(0.0, min(1.0, cell.health + 0.040 * (1.0 - unmet) - 0.075 * unmet))
+            institution = self.block_norm(cell)
+            aligned = institution == cell.norm and institution >= 0
+            recovery_rate = float(self.config.get("health_recovery_rate", 0.044))
+            loss_rate = float(self.config.get("health_loss_rate", 0.046))
+            cell.health = max(0.0, min(1.0, cell.health + recovery_rate * (1.0 - unmet) - loss_rate * unmet))
             cell.payoff += 0.08 * (1.0 - unmet) + 0.035 * cell.reputation
+            if aligned:
+                cell.payoff += 0.035 * self.block_strength[cell.block_id]
             if cell.critical:
                 cell.payoff += 0.05 * (1.0 - unmet)
             if cell.health <= 0.035:
@@ -641,34 +654,37 @@ class LandUseNormSimulation:
             "cooperation_attempts": cooperation_attempts,
         }
 
+    def rebuild_norm(self, idx: int, live_neighbors: list[int]) -> int:
+        block_norm = self.block_norms[self.cells[idx].block_id]
+        if block_norm >= 0 and self.rng.random() < float(self.config.get("hierarchy_rebuild_bias", 0.55)):
+            return block_norm
+        return self.cells[self.rng.choice(live_neighbors)].norm
+
     def evolution_step(self) -> dict[str, int]:
         imitation_rate = float(self.config["imitation_rate"])
         mutation_rate = float(self.config["mutation_rate"])
         rebuild_rate = float(self.config["rebuild_rate"])
+        conformity_rate = float(self.config.get("hierarchy_conformity_rate", 0.025))
         new_norms = [cell.norm for cell in self.cells]
         mutations = 0
         imitations = 0
         rebuilds = 0
-        redevelopment_landuse_changes = 0
+        hierarchy_adoptions = 0
         for idx, cell in enumerate(self.cells):
             if not cell.alive:
                 live_neighbors = [n for n in self.neighbor_indices(idx, 1) if self.cells[n].alive]
                 if live_neighbors and self.rng.random() < rebuild_rate:
-                    parent = self.cells[self.rng.choice(live_neighbors)]
-                    if (
-                        parent.landuse != cell.landuse
-                        and self.rng.random() < float(self.config.get("rebuild_landuse_adoption", 0.55))
-                    ):
-                        self.update_landuse(idx, parent.landuse)
-                        redevelopment_landuse_changes += 1
                     cell.alive = True
-                    cell.norm = parent.norm
-                    cell.entity_id = self.next_entity_id
-                    self.next_entity_id += 1
+                    cell.norm = self.rebuild_norm(idx, live_neighbors)
                     cell.health = 0.45
                     cell.storage = cell.storage_cap * 0.30
                     cell.reputation = 0.50
                     rebuilds += 1
+                continue
+            block_norm = self.block_norm(cell)
+            if block_norm >= 0 and cell.norm != block_norm and self.rng.random() < conformity_rate * self.block_strength[cell.block_id]:
+                new_norms[idx] = block_norm
+                hierarchy_adoptions += 1
                 continue
             if self.rng.random() < mutation_rate:
                 new_norms[idx] = self.rng.randrange(len(NORMS))
@@ -681,12 +697,17 @@ class LandUseNormSimulation:
                 continue
             model_idx = max(
                 neighbors,
-                key=lambda n: self.cells[n].payoff + 0.30 * self.cells[n].health + 0.12 * self.cells[n].reputation,
+                key=lambda n: (
+                    self.cells[n].payoff
+                    + 0.30 * self.cells[n].health
+                    + 0.12 * self.cells[n].reputation
+                    + (0.20 * self.block_strength[self.cells[n].block_id] if self.block_norm(self.cells[n]) == self.cells[n].norm else 0.0)
+                ),
             )
             model = self.cells[model_idx]
             own_score = cell.payoff + 0.30 * cell.health + 0.12 * cell.reputation
             model_score = model.payoff + 0.30 * model.health + 0.12 * model.reputation
-            if model_score > own_score + self.rng.uniform(0.01, 0.15):
+            if model_score > own_score + self.rng.uniform(0.01, 0.12):
                 new_norms[idx] = model.norm
                 imitations += 1
         for idx, norm in enumerate(new_norms):
@@ -695,99 +716,80 @@ class LandUseNormSimulation:
             "norm_mutations": mutations,
             "norm_imitations": imitations,
             "building_rebuilds": rebuilds,
-            "redevelopment_landuse_changes": redevelopment_landuse_changes,
+            "hierarchy_adoptions": hierarchy_adoptions,
         }
 
-    def landuse_transition_step(self) -> dict[str, int]:
-        base_rate = float(self.config.get("landuse_transition_rate", 0.004))
-        stress_bonus = float(self.config.get("landuse_stress_transition_bonus", 0.018))
+    def hierarchy_step(self) -> dict[str, int]:
+        threshold = float(self.config.get("hierarchy_threshold", 0.58))
+        service_threshold = float(self.config.get("hierarchy_service_threshold", 0.72))
         changes = 0
-        for idx, cell in enumerate(self.cells):
-            if not cell.alive:
+        births = 0
+        dissolutions = 0
+        for block_id in range(self.block_count):
+            members = [cell for cell in self.cells if cell.alive and cell.block_id == block_id]
+            if len(members) < max(3, int(self.block_size * self.block_size * 0.25)):
+                if self.block_norms[block_id] >= 0:
+                    self.block_strength[block_id] *= 0.82
+                    if self.block_strength[block_id] < 0.18:
+                        self.block_norms[block_id] = -1
+                        self.block_age[block_id] = 0
+                        dissolutions += 1
                 continue
-            service = cell.served / max(cell.demand, 1e-6)
-            rate = base_rate + stress_bonus * max(0.0, 0.78 - service)
-            if LAND_USES[cell.landuse]["critical"]:
-                rate *= 0.35
-            if self.rng.random() > rate:
-                continue
-            scores = [0.0] * len(LAND_USES)
-            for nidx in self.neighbor_indices(idx, 1):
-                neighbor = self.cells[nidx]
-                if not neighbor.alive:
-                    continue
-                n_service = neighbor.served / max(neighbor.demand, 1e-6)
-                scores[neighbor.landuse] += 0.40 + 0.50 * n_service + 0.25 * neighbor.health
-            scores[cell.landuse] += float(self.config.get("landuse_inertia", 1.35))
-            live_neighbor_landuses = {
-                self.cells[nidx].landuse
-                for nidx in self.neighbor_indices(idx, 1)
-                if self.cells[nidx].alive
-            }
-            if len(live_neighbor_landuses) >= 3:
-                scores[2] += 0.85
-            if cell.critical:
-                scores[3] += 1.60
-            target = max(range(len(scores)), key=lambda k: scores[k] + self.rng.uniform(0.0, 0.08))
-            if target != cell.landuse and scores[target] > scores[cell.landuse] + 0.15:
-                self.update_landuse(idx, target)
-                changes += 1
-        return {"landuse_changes": changes}
+            counts = [0] * len(NORMS)
+            service_by_norm = [0.0] * len(NORMS)
+            for cell in members:
+                counts[cell.norm] += 1
+                service_by_norm[cell.norm] += cell.served / max(cell.demand, 1e-6)
+            winner = max(range(len(NORMS)), key=lambda idx: counts[idx])
+            winner_freq = counts[winner] / len(members)
+            winner_service = service_by_norm[winner] / max(1, counts[winner])
+            if winner_freq >= threshold and winner_service >= service_threshold:
+                target_strength = min(1.0, 0.25 + winner_freq * 0.65 + max(0.0, winner_service - service_threshold) * 0.35)
+                if self.block_norms[block_id] == winner:
+                    self.block_strength[block_id] = min(1.0, self.block_strength[block_id] * 0.88 + target_strength * 0.18)
+                    self.block_age[block_id] += 1
+                else:
+                    previous = self.block_norms[block_id]
+                    switch_margin = 0.10 if previous >= 0 else 0.0
+                    previous_freq = counts[previous] / len(members) if previous >= 0 else 0.0
+                    if previous < 0 or winner_freq > previous_freq + switch_margin:
+                        self.block_norms[block_id] = winner
+                        self.block_strength[block_id] = target_strength
+                        self.block_age[block_id] = 1
+                        births += 1 if previous < 0 else 0
+                        changes += 1 if previous >= 0 else 0
+            else:
+                self.block_strength[block_id] *= 0.92
+                if self.block_strength[block_id] < 0.15 and self.block_norms[block_id] >= 0:
+                    self.block_norms[block_id] = -1
+                    self.block_age[block_id] = 0
+                    dissolutions += 1
+        return {
+            "hierarchy_births": births,
+            "hierarchy_switches": changes,
+            "hierarchy_dissolutions": dissolutions,
+        }
 
-    def merge_step(self) -> dict[str, int]:
-        merge_rate = float(self.config.get("merge_rate", 0.018))
-        max_entity_cells = int(self.config.get("max_entity_cells", 8))
-        sizes = self.entity_sizes()
-        events = 0
-        for idx, cell in enumerate(self.cells):
-            if not cell.alive or sizes.get(cell.entity_id, 0) >= max_entity_cells:
-                continue
-            if cell.health < 0.72 or cell.reputation < 0.45:
-                continue
-            if self.rng.random() > merge_rate:
-                continue
-            candidates = []
-            for nidx in self.neighbor_indices(idx, 1):
-                neighbor = self.cells[nidx]
-                if not neighbor.alive or neighbor.entity_id == cell.entity_id:
-                    continue
-                combined = sizes.get(cell.entity_id, 0) + sizes.get(neighbor.entity_id, 0)
-                if combined > max_entity_cells:
-                    continue
-                compatibility = 0.0
-                if neighbor.norm == cell.norm:
-                    compatibility += 0.55
-                if neighbor.landuse == cell.landuse or 2 in (neighbor.landuse, cell.landuse):
-                    compatibility += 0.35
-                compatibility += 0.15 * min(cell.reputation, neighbor.reputation)
-                compatibility += 0.15 * min(cell.health, neighbor.health)
-                if compatibility > 0.58:
-                    candidates.append((compatibility, nidx))
-            if not candidates:
-                continue
-            _, nidx = max(candidates, key=lambda item: item[0] + self.rng.uniform(0.0, 0.08))
-            neighbor = self.cells[nidx]
-            entity_a = cell.entity_id
-            entity_b = neighbor.entity_id
-            new_entity = self.next_entity_id
-            self.next_entity_id += 1
-            members = [
-                member
-                for member in self.cells
-                if member.alive and member.entity_id in (entity_a, entity_b)
-            ]
-            best = max(members, key=lambda member: member.payoff + member.health + member.reputation)
-            avg_reputation = sum(member.reputation for member in members) / len(members)
-            for member in members:
-                member.entity_id = new_entity
-                member.norm = best.norm
-                member.reputation = 0.55 * member.reputation + 0.45 * avg_reputation
-                member.payoff += 0.035
-            sizes.pop(entity_a, None)
-            sizes.pop(entity_b, None)
-            sizes[new_entity] = len(members)
-            events += 1
-        return {"merge_events": events}
+    def hierarchy_metrics(self) -> tuple[int, float, list[float]]:
+        active = [idx for idx, norm in enumerate(self.block_norms) if norm >= 0]
+        if not active:
+            return 0, 0.0, [0.0] * len(NORMS)
+        counts = [0] * len(NORMS)
+        for idx in active:
+            counts[self.block_norms[idx]] += 1
+        coverage = len(active) / self.block_count
+        return len(active), coverage, [count / len(active) for count in counts]
+
+    def hierarchy_alignment(self) -> float:
+        alive = [cell for cell in self.cells if cell.alive]
+        if not alive:
+            return 0.0
+        aligned = [
+            cell
+            for cell in alive
+            if self.block_norms[cell.block_id] >= 0 and self.block_norms[cell.block_id] == cell.norm
+        ]
+        return len(aligned) / len(alive)
 
     def metrics(self, step: int, stats: dict[str, float]) -> dict[str, Any]:
         alive = [cell for cell in self.cells if cell.alive]
@@ -802,6 +804,7 @@ class LandUseNormSimulation:
             landuse_counts[cell.landuse][cell.norm] += 1
             landuse_service[cell.landuse] += cell.served / max(cell.demand, 1e-6)
             landuse_n[cell.landuse] += 1
+        hierarchy_count, hierarchy_coverage, hierarchy_norms = self.hierarchy_metrics()
         return {
             "step": step,
             "alive_fraction": len(alive) / len(self.cells),
@@ -814,16 +817,23 @@ class LandUseNormSimulation:
             "norm_mutations": int(stats.get("norm_mutations", 0)),
             "norm_imitations": int(stats.get("norm_imitations", 0)),
             "building_rebuilds": int(stats.get("building_rebuilds", 0)),
-            "landuse_changes": int(stats.get("landuse_changes", 0)),
-            "redevelopment_landuse_changes": int(stats.get("redevelopment_landuse_changes", 0)),
-            "merge_events": int(stats.get("merge_events", 0)),
-            "entity_count": len(entity_sizes) if (entity_sizes := self.entity_sizes()) else 0,
-            "mean_entity_size": len(alive) / max(1, len(entity_sizes)),
-            "largest_entity_size": max(entity_sizes.values()) if entity_sizes else 0,
+            "hierarchy_adoptions": int(stats.get("hierarchy_adoptions", 0)),
+            "hierarchy_births": int(stats.get("hierarchy_births", 0)),
+            "hierarchy_switches": int(stats.get("hierarchy_switches", 0)),
+            "hierarchy_dissolutions": int(stats.get("hierarchy_dissolutions", 0)),
+            "hierarchy_count": hierarchy_count,
+            "hierarchy_coverage": hierarchy_coverage,
+            "hierarchy_alignment": self.hierarchy_alignment(),
+            "block_norms": self.block_norms[:],
+            "block_strength": self.block_strength[:],
+            "block_rows": self.block_rows,
+            "block_cols": self.block_cols,
+            "block_size": self.block_size,
             "norm_frequencies": [
                 count / max(1, len(alive))
                 for count in norm_counts
             ],
+            "hierarchy_norm_frequencies": hierarchy_norms,
             "norm_counts": norm_counts,
             "landuse_norm_counts": landuse_counts,
             "landuse_service": [
@@ -835,9 +845,7 @@ class LandUseNormSimulation:
     def step(self, step: int) -> dict[str, Any]:
         stats: dict[str, float] = self.energy_step(step)
         stats.update(self.evolution_step())
-        tissue_stats = self.landuse_transition_step()
-        stats["landuse_changes"] = int(stats.get("redevelopment_landuse_changes", 0)) + int(tissue_stats["landuse_changes"])
-        stats.update(self.merge_step())
+        stats.update(self.hierarchy_step())
         return self.metrics(step, stats)
 
     def run(self) -> SimulationResult:
@@ -865,6 +873,36 @@ def render_panel_title(draw: ImageDraw.ImageDraw, x: int, y: int, title: str) ->
     draw.text((x, y), title, fill=(15, 23, 42))
 
 
+def render_hierarchy_overlay(
+    draw: ImageDraw.ImageDraw,
+    x0: int,
+    y0: int,
+    scale: int,
+    size: int,
+    metric: dict[str, Any],
+) -> None:
+    block_norms = metric.get("block_norms", [])
+    block_strength = metric.get("block_strength", [])
+    block_rows = int(metric.get("block_rows", 0))
+    block_cols = int(metric.get("block_cols", 0))
+    block_size = int(metric.get("block_size", size))
+    for br in range(block_rows):
+        for bc in range(block_cols):
+            bid = br * block_cols + bc
+            if bid >= len(block_norms) or block_norms[bid] < 0:
+                continue
+            norm = block_norms[bid]
+            strength = block_strength[bid] if bid < len(block_strength) else 0.0
+            color = NORMS[norm]["color"]
+            x = x0 + bc * block_size * scale
+            y = y0 + br * block_size * scale
+            x1 = min(x0 + size * scale, x + block_size * scale) - 1
+            y1 = min(y0 + size * scale, y + block_size * scale) - 1
+            width = 1 + int(2 * strength)
+            for offset in range(width):
+                draw.rectangle([x + offset, y + offset, x1 - offset, y1 - offset], outline=color)
+
+
 def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: dict[str, Any]) -> Image.Image:
     scale = 8
     margin = 18
@@ -875,11 +913,7 @@ def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: d
     height = panel + margin * 2 + footer
     image = Image.new("RGB", (width, height), (248, 250, 252))
     draw = ImageDraw.Draw(image)
-    entity_sizes: dict[int, int] = {}
-    for cell in cells:
-        if cell.alive:
-            entity_sizes[cell.entity_id] = entity_sizes.get(cell.entity_id, 0) + 1
-    titles = ["slow land-use tissue", "norm / entity", "service + health"]
+    titles = ["land-use attribute", "individual norm + hierarchy", "service + health"]
     for pidx, title in enumerate(titles):
         x0 = margin + pidx * (panel + gap)
         y0 = margin + 16
@@ -906,21 +940,21 @@ def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: d
                 else:
                     color = blend((220, 38, 38), 0.55 + 0.25 * cell.health)
             draw.rectangle([x, y, x + scale - 1, y + scale - 1], fill=color)
-            if pidx == 1 and cell.alive and entity_sizes.get(cell.entity_id, 0) > 1:
-                draw.rectangle([x + 1, y + 1, x + scale - 2, y + scale - 2], outline=(15, 23, 42))
             if cell.critical and pidx != 0:
                 draw.rectangle(
                     [x + 2, y + 2, x + scale - 3, y + scale - 3],
                     outline=(255, 255, 255),
                 )
+        if pidx == 1:
+            render_hierarchy_overlay(draw, x0, y0, scale, size, metric)
 
     norm_freq = metric["norm_frequencies"]
     top_norm = max(range(len(norm_freq)), key=lambda idx: norm_freq[idx])
     footer_text = (
         f"step={metric['step']:03d} served={metric['served_fraction']:.2f} "
         f"critical={metric['critical_survival']:.2f} coop={metric['cooperation_rate']:.2f} "
-        f"entities={metric['entity_count']} max_entity={metric['largest_entity_size']} "
-        f"landuse_delta={metric['landuse_changes']} top_norm={NORMS[top_norm]['key']} {norm_freq[top_norm]:.2f}"
+        f"hier={metric['hierarchy_coverage']:.2f} align={metric['hierarchy_alignment']:.2f} "
+        f"top_norm={NORMS[top_norm]['key']} {norm_freq[top_norm]:.2f}"
     )
     draw.text((margin, height - footer + 16), footer_text, fill=(15, 23, 42))
     return image
@@ -949,19 +983,21 @@ def write_csv(metrics: list[dict[str, Any]], path: Path) -> None:
             "norm_mutations",
             "norm_imitations",
             "building_rebuilds",
-            "landuse_changes",
-            "redevelopment_landuse_changes",
-            "merge_events",
-            "entity_count",
-            "mean_entity_size",
-            "largest_entity_size",
-        ] + [f"norm_{norm['key']}" for norm in NORMS]
+            "hierarchy_adoptions",
+            "hierarchy_births",
+            "hierarchy_switches",
+            "hierarchy_dissolutions",
+            "hierarchy_count",
+            "hierarchy_coverage",
+            "hierarchy_alignment",
+        ] + [f"norm_{norm['key']}" for norm in NORMS] + [f"hierarchy_{norm['key']}" for norm in NORMS]
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         for row in metrics:
-            flat = {field: row[field] for field in fields[:17]}
+            flat = {field: row[field] for field in fields[:18]}
             for idx, norm in enumerate(NORMS):
                 flat[f"norm_{norm['key']}"] = row["norm_frequencies"][idx]
+                flat[f"hierarchy_{norm['key']}"] = row["hierarchy_norm_frequencies"][idx]
             writer.writerow(flat)
 
 
@@ -999,16 +1035,17 @@ def draw_series_panel(
 
 
 def write_metrics_png(metrics: list[dict[str, Any]], path: Path) -> None:
-    image = Image.new("RGB", (1160, 720), (248, 250, 252))
+    image = Image.new("RGB", (1160, 760), (248, 250, 252))
     draw = ImageDraw.Draw(image)
-    draw.text((36, 24), "Land-use conditioned norm evolution metrics", fill=(15, 23, 42))
+    draw.text((36, 24), "Land-use conditioned norm hierarchy metrics", fill=(15, 23, 42))
     resilience_series = [
         ("alive", "active buildings", (15, 23, 42), [row["alive_fraction"] for row in metrics]),
         ("served", "load served", (22, 163, 74), [row["served_fraction"] for row in metrics]),
         ("critical", "critical survival", (220, 38, 38), [row["critical_survival"] for row in metrics]),
-        ("coop", "sharing success", (37, 99, 235), [row["cooperation_rate"] for row in metrics]),
+        ("hier", "hierarchy coverage", (147, 51, 234), [row["hierarchy_coverage"] for row in metrics]),
+        ("align", "norm hierarchy alignment", (14, 165, 233), [row["hierarchy_alignment"] for row in metrics]),
     ]
-    draw.text((72, 70), "system resilience", fill=(15, 23, 42))
+    draw.text((72, 70), "system and hierarchy", fill=(15, 23, 42))
     draw_series_panel(draw, metrics, 72, 96, 1000, 250, resilience_series)
 
     norm_series = [
@@ -1020,7 +1057,7 @@ def write_metrics_png(metrics: list[dict[str, Any]], path: Path) -> None:
         )
         for idx, norm in enumerate(NORMS)
     ]
-    draw.text((72, 396), "norm frequencies among surviving buildings", fill=(15, 23, 42))
+    draw.text((72, 396), "individual norm frequencies among surviving buildings", fill=(15, 23, 42))
     draw_series_panel(draw, metrics, 72, 422, 1000, 220, norm_series)
     image.save(path)
 
@@ -1054,18 +1091,18 @@ def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
 </head>
 <body>
   <main>
-    <h1>Land-Use Conditioned Norm Evolution</h1>
+    <h1>Land-Use Conditioned Norm Hierarchy</h1>
     <p>
-      Buildings keep a fixed land-use tissue, but their energy-sharing norm can
-      evolve through payoff, reputation, imitation, and mutation. The result is
-      not a land-use dominance map; it shows which cooperation protocols survive
-      under different urban energy contexts.
+      Land use is a fixed cell attribute that shapes demand and generation.
+      Buildings adapt norms quickly. Rebuild is slow. Block-level norms can
+      emerge from local individual norm success and then bias future behavior.
     </p>
     <div class="panel">
       <strong>Final summary:</strong>
       served={summary['served_fraction']:.2f},
       critical survival={summary['critical_survival']:.2f},
-      cooperation={summary['cooperation_rate']:.2f},
+      hierarchy coverage={summary['hierarchy_coverage']:.2f},
+      alignment={summary['hierarchy_alignment']:.2f},
       top norm={summary['top_norm']}.
     </div>
     <div class="panel">

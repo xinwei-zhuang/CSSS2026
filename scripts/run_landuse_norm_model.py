@@ -25,6 +25,8 @@ def main() -> None:
     print(f"served_fraction={final['served_fraction']:.3f}")
     print(f"critical_survival={final['critical_survival']:.3f}")
     print(f"cooperation_rate={final['cooperation_rate']:.3f}")
+    print(f"hierarchy_coverage={final['hierarchy_coverage']:.3f}")
+    print(f"hierarchy_alignment={final['hierarchy_alignment']:.3f}")
     print(f"top_norm={NORMS[top_norm]['key']}:{NORMS[top_norm]['name']} {final['norm_frequencies'][top_norm]:.3f}")
     print("final_norm_frequencies=" + json.dumps({
         NORMS[idx]["key"]: round(value, 4)
