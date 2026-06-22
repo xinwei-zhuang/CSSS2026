@@ -32,6 +32,10 @@ urban-energy experiment instead of a purely abstract substrate.
   inspired by the cooperative/competitive loop we discussed for the city model.
 - `city_profiles_csv` loads the real hourly building energy profiles and turns
   them into 24-hour demand curves used during training.
+- `city_solar_epw` loads San Francisco EPW climate data and turns hourly GHI
+  plus air temperature into a simplified PV generation curve.
+- `city_building_metadata_csv` estimates usable roof area as
+  `bldgsqft / floors * 0.092903 * city_roof_usable_fraction`.
 - `city_energy_weight` makes profile-based service survival part of the growth
   objective. Tissues with enough solar / storage to serve their current demand
   get stronger survival weight.
@@ -58,16 +62,30 @@ python src/train.py --config configs/city-petri.json
 
 ## Current Scope
 
-This does not yet load the San Francisco building energy-profile CSVs. Those
-profiles are now read from `../data/energy_profiles_clean/energy_profiles_hourly_used.csv`.
-The loader samples residential and commercial profiles, compresses each yearly
-profile into an average 24-hour curve, and maps those curves onto:
+Demand profiles are read from
+`../data/energy_profiles_clean/energy_profiles_hourly_used.csv`. The loader
+samples residential and commercial profiles, compresses each yearly profile into
+an average 24-hour curve, and maps those curves onto:
 
 - NCA 0: residential / solar-support demand
 - NCA 1: commercial / dense-load demand
 - NCA 2: mixed demand with high storage and critical-load weighting
 
-This is still a first bridge, not the final empirical model. It uses real
-demand profiles, while solar potential and storage capacity are still abstract
-city-tissue parameters. The next step is to assign explicit building metadata
-to cells and score final resilience by critical-load survival.
+Solar generation now follows the simplified notebook logic:
+
+```text
+roof_area_estimate * SF climate radiation * PV efficiency correction
+```
+
+The EPW climate file supplies hourly `ghi` and `temp_air`. By default the config
+uses the June 13 San Francisco-Presidio weather slice, matching the reference
+notebook. The PV output is normalized before training so it acts as a stable
+survival signal rather than an unbounded physical unit. Solar potential is also
+divided by type-level average load from `annual_total / 8760`, so the model sees
+roof-to-load advantage rather than roof area alone.
+
+This is still a first bridge, not the final empirical model. It uses real demand
+profiles, real SF radiation shape, and metadata-based roof-area estimates, while
+storage capacity remains an abstract city-tissue parameter. The next step is to
+assign explicit building metadata to cells and score final resilience by
+critical-load survival.

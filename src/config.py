@@ -64,6 +64,12 @@ class Config:
     city_environment_strength: float = 0.35
     city_hypercycle_gamma: float = 0.0
     city_profiles_csv: str = ""
+    city_building_metadata_csv: str = ""
+    city_solar_epw: str = ""
+    city_solar_month: int = 0
+    city_solar_day: int = 0
+    city_pv_efficiency: float = 0.20
+    city_roof_usable_fraction: float = 0.65
     city_profile_sample_size: int = 128
     city_energy_weight: float = 0.35
     city_critical_weight: float = 0.8

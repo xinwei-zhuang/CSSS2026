@@ -318,12 +318,14 @@ class CASunGroup:
         demand_pressure = 1.0
         storage_pressure = 0.6
         critical_pressure = 0.3
+        solar_pressure = daylight
         if self.city_energy is not None:
             demand_pressure = float(self.city_energy.demand_at(step).mean().item())
+            solar_pressure = float(self.city_energy.solar_at(step).mean().item())
             storage_pressure = float(self.city_energy.storage_support.mean().item())
             critical_pressure = float(self.city_energy.critical_weight.mean().item())
 
-        stress = max(0.0, demand_pressure - daylight * self.city_solar_scale)
+        stress = max(0.0, demand_pressure - solar_pressure * self.city_solar_scale)
         defense = 0.35 * daylight + 0.45 * storage_pressure + 0.20 * critical_pressure
         vec[:attack_dim] = self.city_environment_strength * (
             0.65 * stress + 0.25 * (1.0 - daylight)
@@ -344,7 +346,9 @@ class CASunGroup:
         if not self.city_mode:
             return
         self.city_step = step
-        if self.city_daily_cycle:
+        if self.city_energy is not None:
+            daylight = self.city_energy.daylight_at(step)
+        elif self.city_daily_cycle:
             phase = (step % max(1, self.city_cycle_period)) / max(1, self.city_cycle_period)
             daylight = max(0.0, math.sin(math.pi * phase))
         else:
@@ -365,7 +369,6 @@ class CASunGroup:
             return None
         service = self.city_energy.service_ratio(
             self.city_step,
-            self.city_daylight,
             self.city_solar_scale,
         ).to(device=self.device)
         value = service * (
