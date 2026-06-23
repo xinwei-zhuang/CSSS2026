@@ -11,7 +11,7 @@
     "use_full_year_solar": true,
     "render_stride": 168,
     "share_radius": 10,
-    "local_norm_radius": 10,
+    "local_norm_radius": 3,
     "sharing_min_efficiency": 0.35,
     "sharing_efficiency_decay": 0.65,
     "sharing_loss_exponent": 1.0,

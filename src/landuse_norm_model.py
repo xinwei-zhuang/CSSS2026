@@ -563,6 +563,9 @@ class LandUseNormSimulation:
     def should_share(self, donor: Cell, receiver: Cell, distance: float) -> bool:
         norm = NORMS[donor.norm]["kind"]
         receiver_good = receiver.reputation >= 0.5
+        receiver_excellent = receiver.reputation >= 0.72
+        need_ratio = receiver.deficit / max(receiver.demand, 1e-6)
+        surplus_ratio = donor.surplus / max(donor.demand, 1e-6)
         block_norm = self.block_norm(donor)
         institutional_bonus = block_norm == donor.norm and self.block_strength[donor.block_id] > 0.35
         threshold_shift = 0.10 if institutional_bonus else 0.0
@@ -571,20 +574,24 @@ class LandUseNormSimulation:
         if norm == "generous":
             return donor.storage > donor.storage_cap * (0.20 - threshold_shift)
         if norm == "selfish":
-            return receiver.critical and donor.surplus > donor.demand * (0.65 - threshold_shift)
+            return receiver.critical and surplus_ratio > (1.15 - threshold_shift)
         if norm == "standing":
-            return receiver_good or receiver.critical
+            return receiver_good or (receiver.critical and donor.storage > donor.storage_cap * 0.30)
         if norm == "stern":
-            return receiver_good or receiver.critical
+            return receiver_good and (receiver.critical or donor.storage > donor.storage_cap * 0.38)
         if norm == "shunning":
-            return receiver_good and donor.storage > donor.storage_cap * (0.42 - threshold_shift)
+            return receiver_excellent and donor.storage > donor.storage_cap * (0.50 - threshold_shift)
         if norm == "critical":
-            return receiver.critical or (receiver_good and donor.storage > donor.storage_cap * (0.35 - threshold_shift))
+            return receiver.critical and donor.storage > donor.storage_cap * (0.24 - threshold_shift)
         if norm == "market":
-            return receiver.deficit * (2.0 if receiver.critical else 1.0) > 0.30 + 0.08 * distance - threshold_shift
+            benefit = need_ratio * (1.8 if receiver.critical else 1.0)
+            distance_cost = 0.22 * distance / max(1.0, float(self.config.get("share_radius", 1)))
+            return benefit + 0.20 * receiver.reputation > 0.46 + distance_cost - threshold_shift
         if norm == "local":
             local_radius = float(self.config.get("local_norm_radius", self.config.get("share_radius", 2)))
-            return receiver_good and distance <= (local_radius + (0.75 if institutional_bonus else 0.0))
+            return distance <= (local_radius + (0.75 if institutional_bonus else 0.0)) and (
+                receiver_good or receiver.critical
+            )
         return False
 
     def pool_link_allowed(self, a: Cell, b: Cell, distance: float) -> bool:
@@ -592,22 +599,46 @@ class LandUseNormSimulation:
             return False
         norm = NORMS[a.norm]["kind"]
         b_good = b.reputation >= 0.5
+        b_excellent = b.reputation >= 0.72
+        need_ratio = b.deficit / max(b.demand, 1e-6)
         if norm == "generous":
             return True
         if norm == "selfish":
-            return a.critical or b.critical
+            return b.critical
         if norm in ("standing", "stern"):
-            return b_good or b.critical or a.critical
+            return b_good or b.critical
         if norm == "shunning":
-            return b_good
+            return b_excellent
         if norm == "critical":
-            return a.critical or b.critical or b_good
+            return b.critical
         if norm == "market":
-            return True
+            return need_ratio > 0.18 or b.critical
         if norm == "local":
             local_radius = float(self.config.get("local_norm_radius", self.config.get("share_radius", 2)))
-            return b_good and distance <= local_radius
+            return distance <= local_radius and (b_good or b.critical)
         return False
+
+    def norm_transfer_fraction(self, donor: Cell, receiver: Cell, distance: float) -> float:
+        norm = NORMS[donor.norm]["kind"]
+        if norm == "generous":
+            return 1.00
+        if norm == "selfish":
+            return 0.32 if receiver.critical else 0.0
+        if norm == "standing":
+            return 0.72 if receiver.reputation >= 0.5 else 0.45
+        if norm == "stern":
+            return 0.58 if receiver.reputation >= 0.5 else 0.0
+        if norm == "shunning":
+            return 0.46 if receiver.reputation >= 0.72 else 0.0
+        if norm == "critical":
+            return 0.92 if receiver.critical else 0.12
+        if norm == "market":
+            need_ratio = receiver.deficit / max(receiver.demand, 1e-6)
+            return max(0.20, min(0.95, 0.25 + 0.75 * need_ratio))
+        if norm == "local":
+            local_radius = max(1e-6, float(self.config.get("local_norm_radius", self.config.get("share_radius", 2))))
+            return max(0.18, 0.82 * (1.0 - min(1.0, distance / local_radius)))
+        return 0.0
 
     def sharing_efficiency(self, distance: float) -> float:
         radius = max(1e-6, float(self.config.get("share_radius", 1)))
@@ -641,21 +672,22 @@ class LandUseNormSimulation:
             if not candidates:
                 continue
             pool_count += 1
-            pool_members += 1 + len(candidates)
             candidates.sort(key=lambda item: (-self.cells[item[1]].surplus * self.sharing_efficiency(item[0]), item[0]))
             max_donors = int(self.config.get("max_pool_donors_per_receiver", 24))
+            pool_members += 1 + min(len(candidates), max_donors)
             for dist, didx in candidates[:max_donors]:
                 if receiver.deficit <= 0.01:
                     break
                 donor = self.cells[didx]
                 cooperation_attempts += 1
-                action = self.should_share(donor, receiver, dist) or self.pool_link_allowed(donor, receiver, dist)
+                action = self.should_share(donor, receiver, dist)
                 donor.reputation = self.assess(donor, receiver, action)
                 if not action:
                     donor.payoff -= 0.018 if receiver.critical else 0.006
                     continue
                 efficiency = self.sharing_efficiency(dist)
-                transfer = min(donor.surplus, receiver.deficit / max(0.1, efficiency))
+                transfer_cap = donor.surplus * self.norm_transfer_fraction(donor, receiver, dist)
+                transfer = min(transfer_cap, receiver.deficit / max(0.1, efficiency))
                 if transfer <= 0.0:
                     continue
                 received = transfer * efficiency
@@ -768,7 +800,10 @@ class LandUseNormSimulation:
                         and self.block_strength[donor.block_id] > 0.35
                     )
                     efficiency = 0.98 if same_block_institution else self.sharing_efficiency(dist)
-                    transfer = min(donor.surplus, receiver.deficit / max(0.1, efficiency))
+                    transfer_cap = donor.surplus * self.norm_transfer_fraction(donor, receiver, dist)
+                    transfer = min(transfer_cap, receiver.deficit / max(0.1, efficiency))
+                    if transfer <= 0.0:
+                        continue
                     received = transfer * efficiency
                     donor.storage -= transfer
                     donor.surplus = max(0.0, donor.storage - donor.storage_cap * 0.44)

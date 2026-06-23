@@ -92,16 +92,19 @@ The sweep runs eight fixed norms:
 | Key | Rule | Sharing logic |
 | --- | --- | --- |
 | `ALLC` | generous | shares broadly when possible |
-| `SELF` | selfish | shares only when the donor keeps enough buffer or the receiver is critical |
-| `DISC` | standing | shares with good-reputation or critical receivers |
-| `SJ` | stern judging | reputation-sensitive indirect reciprocity |
-| `SHUN` | shunning | shares mainly with good-reputation receivers |
-| `CRIT` | critical first | prioritizes critical loads |
-| `MKT` | market | shares when deficit/payoff is high |
-| `LOCAL` | neighbor loyal | favors nearby receivers |
+| `SELF` | selfish | shares only with critical receivers and only from surplus above a high buffer |
+| `DISC` | standing | shares with good-reputation receivers, and with critical receivers if storage is adequate |
+| `SJ` | stern judging | shares only with good-reputation receivers under stricter storage conditions |
+| `SHUN` | shunning | shares only with excellent-reputation receivers and keeps a high storage buffer |
+| `CRIT` | critical first | shares almost exclusively with critical receivers |
+| `MKT` | market | shares when receiver need exceeds distance cost and reputation-adjusted payoff threshold |
+| `LOCAL` | neighbor loyal | uses the 10-cell search radius but only cooperates inside a 3-cell local norm radius |
 
 In this static baseline, a building does not change its norm. Each run assigns
 all buildings the same fixed norm so the eight rules can be compared directly.
+The shared-storage pool only identifies candidate donors; the final donation
+decision must still pass the donor's norm rule. Norms also differ in the maximum
+fraction of surplus a donor is willing to transfer.
 
 ## Time Periods And Iterations
 
@@ -179,16 +182,20 @@ static_shared_pool_annual_summary.png
 combined_results.html
 ```
 
-The latest sweep uses `share_radius = 10` with linear distance-decayed sharing.
-Broad-sharing rules now improve overall survival: `SHUN`, `DISC`, `SJ`, and
-`CRIT` reach alive fractions around 0.69. `SELF` still produces fewer sharing
-events and lower total survival, but it has the strongest critical-load
-survival at 0.824. This makes the static selfish baseline useful for testing
+The latest sweep uses `share_radius = 10` with linear distance-decayed sharing
+and sharper norm definitions. `DISC` and `SJ` now produce the highest overall
+survival, both around 0.695. `SELF` and `CRIT` produce lower total survival but
+much higher critical-load survival, around 0.816 and 0.824. `LOCAL` is weakest
+because it only accepts near-neighbor cooperation, and `MKT` creates many
+attempts but higher stress memory because the payoff threshold filters many
+candidate exchanges. This makes the static baseline more useful for testing
 whether adaptive rule evolution can improve total survival without sacrificing
 critical-load protection.
 
 ## GitHub Status
 
-The folder is already a Git repository. The current `origin` still points to the
-original SakanaAI PD-NCA repository, so pushing to the user's GitHub account
-requires replacing `origin` with the user's repository URL first.
+The folder is a Git repository with `origin` set to:
+
+```text
+https://github.com/xinwei-zhuang/CSSS2026.git
+```
