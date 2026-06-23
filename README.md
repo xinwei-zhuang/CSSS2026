@@ -1,183 +1,168 @@
-# Petri City: Land-Use Conditioned Norm Evolution
+# Static Building-Energy ABM Baseline
 
-This project models a neighborhood as an artificial-life energy system. The
-important conceptual correction is:
+This repository contains a static agent-based model for testing how fixed
+energy-sharing rules perform in a neighborhood with building load, rooftop
+solar, storage, and local shared storage.
+
+The current baseline is intentionally simple:
+
+- agent = building
+- land use = fixed cell attribute
+- norm = fixed sharing rule
+- no external grid
+- no rule evolution
+- no hierarchy formation
+- no rebuilding
+
+This is meant to be compared later against a rule-evolution model.
+
+## Initial Setting
+
+The main configuration is:
 
 ```text
-agent = building
-tissue = fixed land-use attribute of each cell
-tribe = energy-sharing norm / protocol
+configs/static-shared-pool-annual-no-grid.json
 ```
 
-The model no longer treats solar, load, and storage as three biological
-species. Land use is a cell attribute that shapes load profile, roof area, and
-storage assumptions. Buildings decide which cooperation rule to follow, imitate
-successful neighbors, mutate, build reputation, survive or fail under energy
-stress, and can slowly rebuild after failure. Block-level norms can emerge from
-local individual norm success.
+Important default settings:
 
-## Why This Version Exists
+| Parameter | Value | Meaning |
+| --- | ---: | --- |
+| `grid_size` | 36 | 36 x 36 building cells |
+| `steps` | 8761 | one full hourly annual profile |
+| `critical_fraction` | 0.10 | fraction of buildings tagged as critical loads |
+| `share_radius` | 2 | local sharing neighborhood |
+| `enable_shared_storage_pool` | true | nearby surplus buildings can form a local pool |
+| `normal_grid_support` | 0.0 | no external grid in normal periods |
+| `outage_grid_support` | 0.0 | no external grid in outage periods |
+| `storage_capacity_multiplier` | 24.0 | storage capacity scale |
+| `solar_generation_multiplier` | 4.0 | solar generation scale |
+| `stress_memory_retention` | 0.96 | stress memory decay factor |
 
-The earlier PD-NCA visualization produced spatial patterns, but it did not say
-much beyond "the strongest energy phenotype spreads." This version is designed
-to produce interpretable research questions:
+Land use is fixed for each cell and affects load profile and solar/storage
+potential. The current land-use types are residential, commercial, and
+industrial.
 
-- Which sharing norms survive in residential, commercial, and industrial cells?
-- Does cooperation cluster around critical loads?
-- Do large-area commercial buildings become generators for surrounding cells?
-- Do successful individual norms become higher-level block norms?
+## Data
 
-## State Variables
-
-Each grid cell is one building agent with:
-
-- fixed `landuse`
-- evolving `norm`
-- `block_id`, used for emergent hierarchical norms
-- `reputation`
-- `health`
-- `storage`
-- hourly `demand`
-- hourly `solar generation`
-- `critical` status
-- recent `payoff`
-
-## Land-Use Tissues
-
-| Key | Land use | Role |
-| --- | --- | --- |
-| R | residential | evening-biased demand, smaller roof area |
-| C | commercial | daytime demand, larger roof area |
-| I | industrial | flatter high demand, larger roof/storage potential |
-
-Land use does not evolve in the current model. It is the cell-level tissue
-attribute that changes the building's demand profile and solar potential.
-
-## Norm Tribes
-
-The tribes are leading-eight-inspired indirect reciprocity norms. They are not
-literal land-use types. They are protocols for deciding whether to share surplus
-energy and how to update reputation afterward.
-
-| Key | Norm | Intuition |
-| --- | --- | --- |
-| ALLC | generous | share broadly when possible |
-| SELF | selfish | share only under strong self-interest |
-| DISC | standing | share with good-reputation or critical receivers |
-| SJ | stern judging | punish helping bad actors more strongly |
-| SHUN | shunning | cooperate only with good-reputation receivers |
-| CRIT | critical first | prioritize critical loads |
-| MKT | market | share when the local deficit/payoff is high |
-| LOCAL | neighbor loyal | favor nearby good-reputation receivers |
-
-This is inspired by the logic of Ohtsuki and Iwasa's "leading eight": donor
-actions are judged in relation to the recipient's reputation. In this urban
-translation, a donor is a building with surplus energy, a recipient is a
-building with deficit, cooperation means sharing energy, and reputation records
-whether a building/protocol is considered reliable.
-
-## Real Data Inputs
-
-Demand profiles:
+Demand uses the cleaned annual building energy profiles:
 
 ```text
 ../data/energy_profiles_clean/energy_profiles_hourly_used.csv
-```
-
-Building metadata for roof-area estimates:
-
-```text
 ../data/energy_profiles_clean/building_energy_metadata.csv
 ```
 
-San Francisco climate data:
+Solar uses the San Francisco EPW file configured in the JSON file. The simplified
+solar model is:
 
 ```text
-C:/UCBcourses/RESEARCH/Lau grant/solar/validation/validation/step 4 PV/USA_CA_San.Francisco-Presidio.994016_TMYx.2009-2023/USA_CA_San.Francisco-Presidio.994016_TMYx.2009-2023.epw
+building roof area * hourly solar radiation * PV efficiency * usable roof fraction
 ```
 
-Solar generation uses the simplified PV logic:
+Large-area buildings can therefore produce surplus and share with nearby
+buildings.
+
+## Fixed Norms
+
+The sweep runs eight fixed norms:
+
+| Key | Rule | Sharing logic |
+| --- | --- | --- |
+| `ALLC` | generous | shares broadly when possible |
+| `SELF` | selfish | shares only when the donor keeps enough buffer or the receiver is critical |
+| `DISC` | standing | shares with good-reputation or critical receivers |
+| `SJ` | stern judging | reputation-sensitive indirect reciprocity |
+| `SHUN` | shunning | shares mainly with good-reputation receivers |
+| `CRIT` | critical first | prioritizes critical loads |
+| `MKT` | market | shares when deficit/payoff is high |
+| `LOCAL` | neighbor loyal | favors nearby receivers |
+
+In this static baseline, a building does not change its norm. Each run assigns
+all buildings the same fixed norm so the eight rules can be compared directly.
+
+## Time Periods And Iterations
+
+Each run uses 8761 hourly steps from the annual demand profile and annual EPW
+solar sequence. This is not a repeated 24-hour average day.
+
+Rendered frames are saved every 168 steps, roughly once per week. The model does
+not stop on convergence in the current baseline, so all runs complete the full
+annual sequence unless every building dies.
+
+## Stress Memory
+
+Each building stores a decaying memory of unmet demand:
 
 ```text
-estimated roof area * hourly SF radiation * PV efficiency correction
+m_i(t+1) = lambda * m_i(t) + (1 - lambda) * u_i(t)
 ```
 
-It is intentionally based on area, not divided by the building's own demand,
-because large-area buildings can share surplus with surrounding cells.
+where:
 
-## Dynamics
+- `m_i(t)` is stress memory for building `i`
+- `lambda = stress_memory_retention = 0.96`
+- `u_i(t)` is unmet demand fraction at the current hour
 
-Each hour:
+This means recent stress matters most, but old stress fades gradually.
 
-1. Buildings generate solar energy and serve their own demand.
-2. Deficit buildings ask nearby surplus buildings for help.
-3. Donors decide whether to share based on their current norm.
-4. Donor reputation updates according to the norm's assessment rule.
-5. Unserved demand damages health, especially around critical loads.
-6. Buildings imitate nearby norms with higher payoff, reputation, and health.
-7. Occasional mutation introduces alternative norms.
-8. Failed buildings can rebuild slowly, usually copying nearby successful or
-   locally institutionalized norms.
-9. A block-level hierarchical norm can emerge when one norm is both common and
-   successful inside a local block. Once formed, it increases conformity and
-   makes same-block sharing more efficient.
+## Metrics
 
-A solar shock is applied during the middle of the run to test resilience.
+Main metrics are written to CSV and JSON.
+
+| Metric | Meaning |
+| --- | --- |
+| `alive_fraction` | alive buildings divided by all buildings at final step |
+| `critical_survival` | alive critical buildings divided by all critical buildings |
+| `annual_mean_served_fraction` | mean hourly fraction of demand served across the year |
+| `annual_mean_critical_service` | mean hourly fraction of critical demand served |
+| `mean_stress_memory` | final average stress memory among alive buildings |
+| `critical_stress_memory` | final average stress memory among alive critical buildings |
+| `annual_cooperation_successes` | total successful sharing events over the year |
+| `mean_pool_members` | average local shared-storage pool size during final week |
+
+Here, resilience means critical-load survival under no external grid support,
+reported together with annual service fraction and stress memory. In other
+words, a rule is more resilient if critical buildings remain alive, demand is
+served consistently, and accumulated stress remains low.
 
 ## Run
 
-```powershell
-.\.venv\Scripts\python.exe scripts\run_landuse_norm_model.py --config configs\landuse-norm-final.json
-```
-
-## Scenario Sweep
-
-Run a parameter sweep across shock severity, sharing radius, rebuild rate, and
-random seed:
+Run the eight-rule static baseline:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_scenario_sweep.py --config configs\landuse-norm-final.json --steps 336 --out-dir results\scenario_sweep
+.\.venv\Scripts\python.exe .\scripts\run_static_norm_sweep.py --config .\configs\static-shared-pool-annual-no-grid.json --out-dir .\results\static_shared_pool_annual_sweep
 ```
 
-The sweep is intended to compare regimes, not to make one final animation for
-every parameter set. It writes a compact comparison package:
+Run one config directly:
 
-- `scenario_sweep_results.csv`
-- `scenario_sweep_results.json`
-- `scenario_sweep_summary.png`
-- `scenario_sweep_outcome_map.png`
-- `scenario_sweep_representative_snapshots.png`
+```powershell
+.\.venv\Scripts\python.exe .\scripts\run_landuse_norm_model.py --config .\configs\static-shared-pool-annual-no-grid.json
+```
 
-## Outputs
+## Latest Outputs
 
-The final result package is:
+Latest results are in:
 
 ```text
-results/final_landuse_norm
+results/static_shared_pool_annual_sweep/
 ```
 
-It contains:
+Key files:
 
-- `landuse_norm_evolution.gif`
-- `landuse_norm_contact_sheet.png`
-- `landuse_norm_final_snapshot.png`
-- `landuse_norm_hierarchy_canopy.png`
-- `landuse_norm_hierarchy_map.png`
-- `landuse_norm_hierarchy_blocks.csv`
-- `landuse_norm_metrics.png`
-- `landuse_norm_results.html`
-- `landuse_norm_metrics.csv`
-- `landuse_norm_metrics.json`
+```text
+static_shared_pool_annual_summary.csv
+static_shared_pool_annual_summary.json
+static_shared_pool_annual_summary.png
+```
 
-## What To Look For
+The latest sweep shows that most non-selfish rules produce similar final alive
+fractions, while `SELF` has slightly lower total survival but the highest
+critical-load survival. This makes `SELF` a useful baseline for testing whether
+adaptive rule evolution can improve overall survival without sacrificing
+critical-load protection.
 
-Read the outputs as a comparison between three layers:
+## GitHub Status
 
-- land-use attribute: what load/generation context each cell has
-- individual norm tribe: what cooperation protocol each building adopts
-- hierarchical norm: which block-level rule emerges from local norm competition
-- service/health: whether energy demand and critical loads survive
-
-The most useful result is not the final color pattern alone. The useful result
-is the relation between land use, individual norm frequency, hierarchical norm
-coverage/alignment, cooperation rate, and critical-load survival over time.
+The folder is already a Git repository. The current `origin` still points to the
+original SakanaAI PD-NCA repository, so pushing to the user's GitHub account
+requires replacing `origin` with the user's repository URL first.

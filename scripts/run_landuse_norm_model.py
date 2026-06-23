@@ -14,7 +14,7 @@ from landuse_norm_model import NORMS, run_from_config  # noqa: E402
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/landuse-norm-final.json")
+    parser.add_argument("--config", default="configs/static-shared-pool-annual-no-grid.json")
     args = parser.parse_args()
 
     result, out_dir = run_from_config(args.config)
@@ -25,8 +25,16 @@ def main() -> None:
     print(f"served_fraction={final['served_fraction']:.3f}")
     print(f"critical_survival={final['critical_survival']:.3f}")
     print(f"cooperation_rate={final['cooperation_rate']:.3f}")
+    print(f"cooperation_successes={final.get('cooperation_successes', 0)}")
     print(f"hierarchy_coverage={final['hierarchy_coverage']:.3f}")
     print(f"hierarchy_alignment={final['hierarchy_alignment']:.3f}")
+    print(f"model_mode={final.get('model_mode', 'evolving_norms')}")
+    print(f"fixed_norm_key={final.get('fixed_norm_key', '')}")
+    print(f"converged={final.get('converged', False)}")
+    print(f"stable_steps={final.get('stable_steps', 0)}")
+    print(f"daily_health_delta={final.get('daily_health_delta', 0.0):.6f}")
+    print(f"daily_storage_delta={final.get('daily_storage_delta', 0.0):.6f}")
+    print(f"daily_alive_changes={final.get('daily_alive_changes', 0)}")
     print(f"top_norm={NORMS[top_norm]['key']}:{NORMS[top_norm]['name']} {final['norm_frequencies'][top_norm]:.3f}")
     print("final_norm_frequencies=" + json.dumps({
         NORMS[idx]["key"]: round(value, 4)

@@ -102,6 +102,14 @@ NORMS = [
 ]
 
 
+def norm_index(key: str) -> int:
+    target = key.upper()
+    for idx, norm in enumerate(NORMS):
+        if norm["key"] == target:
+            return idx
+    raise ValueError(f"Unknown norm key: {key}")
+
+
 @dataclass
 class Cell:
     landuse: int
@@ -118,6 +126,7 @@ class Cell:
     deficit: float = 0.0
     surplus: float = 0.0
     payoff: float = 0.0
+    stress_memory: float = 0.0
 
 
 @dataclass
@@ -135,6 +144,7 @@ class SimulationResult:
     metrics: list[dict[str, Any]]
     final_cells: list[Cell]
     data: DataBundle
+    config: dict[str, Any]
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -248,7 +258,7 @@ def fallback_demand(kind: str) -> list[float]:
     return normalize_mean(raw)
 
 
-def load_demand_curves(path: str, sample_size: int) -> tuple[dict[str, list[float]], dict[str, int]]:
+def load_demand_curves(path: str, sample_size: int, full_series: bool = False) -> tuple[dict[str, list[float]], dict[str, int]]:
     curves = {"residential": [], "commercial": []}
     csv_path = Path(path)
     if csv_path.exists():
@@ -261,23 +271,31 @@ def load_demand_curves(path: str, sample_size: int) -> tuple[dict[str, list[floa
                 if profile_type not in curves or len(curves[profile_type]) >= target_each:
                     continue
                 values = [safe_float(row.get(col), 0.0) for col in time_cols]
-                curves[profile_type].append(hourly_to_daily(values))
+                curves[profile_type].append(normalize_mean(values) if full_series else hourly_to_daily(values))
                 if all(len(values_) >= target_each for values_ in curves.values()):
                     break
     out = {}
     counts = {}
+    target_len = 0
+    for values in curves.values():
+        if values:
+            target_len = max(target_len, min(len(curve) for curve in values))
+    if target_len <= 0:
+        target_len = 8760 if full_series else 24
     for kind in curves:
         counts[kind] = len(curves[kind])
         if curves[kind]:
             out[kind] = normalize_mean(
                 [
                     sum(curve[hour] for curve in curves[kind]) / len(curves[kind])
-                    for hour in range(24)
+                    for hour in range(target_len)
                 ]
             )
         else:
-            out[kind] = fallback_demand(kind)
-    out["industrial"] = fallback_demand("industrial")
+            daily = fallback_demand(kind)
+            out[kind] = [daily[i % 24] for i in range(target_len)]
+    industrial_daily = fallback_demand("industrial")
+    out["industrial"] = [industrial_daily[i % 24] for i in range(target_len)]
     counts["industrial"] = 0
     return out, counts
 
@@ -341,6 +359,28 @@ def read_epw_24h(path: str, month: int, day: int) -> tuple[list[float], list[flo
     )
 
 
+def read_epw_series(path: str) -> tuple[list[float], list[float], str]:
+    epw_path = Path(path)
+    if not epw_path.exists():
+        solar, temp, source = read_epw_24h(path, 6, 13)
+        return [solar[i % 24] for i in range(8760)], [temp[i % 24] for i in range(8760)], source
+    ghi = []
+    temp = []
+    with epw_path.open(newline="", encoding="utf-8", errors="ignore") as f:
+        reader = csv.reader(f)
+        for _ in range(8):
+            next(reader, None)
+        for row in reader:
+            if len(row) < 16:
+                continue
+            temp.append(safe_float(row[6], 15.0))
+            ghi.append(max(0.0, safe_float(row[13], 0.0)))
+    if not ghi:
+        solar, temp_daily, source = read_epw_24h(path, 6, 13)
+        return [solar[i % 24] for i in range(8760)], [temp_daily[i % 24] for i in range(8760)], source
+    return ghi, temp, str(epw_path)
+
+
 def pv_per_m2_kw(ghi: list[float], temp_air: list[float], efficiency: float) -> list[float]:
     tref = 25.0
     c1, c2, c3 = -3.75, 1.14, 0.0175
@@ -358,23 +398,28 @@ def pv_per_m2_kw(ghi: list[float], temp_air: list[float], efficiency: float) -> 
 
 
 def load_data(config: dict[str, Any]) -> DataBundle:
+    full_series = bool(config.get("use_full_year_profiles", False))
     demand_curves, profile_counts = load_demand_curves(
         config["demand_csv"],
         int(config["profile_sample_size"]),
+        full_series,
     )
     roof = estimate_roof_area(
         config["metadata_csv"],
         int(config["profile_sample_size"]),
         float(config["roof_usable_fraction"]),
     )
-    ghi, temp, solar_source = read_epw_24h(
-        config["solar_epw"],
-        int(config["solar_month"]),
-        int(config["solar_day"]),
-    )
+    if bool(config.get("use_full_year_solar", full_series)):
+        ghi, temp, solar_source = read_epw_series(config["solar_epw"])
+    else:
+        ghi, temp, solar_source = read_epw_24h(
+            config["solar_epw"],
+            int(config["solar_month"]),
+            int(config["solar_day"]),
+        )
     pv = pv_per_m2_kw(ghi, temp, float(config["pv_efficiency"]))
     raw_solar = {kind: [v * roof[kind] for v in pv] for kind in roof}
-    reference = sum(sum(v) / 24 for v in raw_solar.values()) / len(raw_solar)
+    reference = sum(sum(v) / max(1, len(v)) for v in raw_solar.values()) / len(raw_solar)
     if reference <= 0:
         reference = 1.0
     solar_curves = {
@@ -390,6 +435,8 @@ def load_data(config: dict[str, Any]) -> DataBundle:
             "metadata_csv": config["metadata_csv"],
             "solar_epw": solar_source,
             "profiles": json.dumps(profile_counts),
+            "demand_series_length": str(len(next(iter(demand_curves.values())))),
+            "solar_series_length": str(len(next(iter(solar_curves.values())))),
         },
     )
 
@@ -400,6 +447,11 @@ class LandUseNormSimulation:
         self.data = data
         self.size = int(config["grid_size"])
         self.rng = random.Random(int(config["seed"]))
+        fixed_norm_key = config.get("fixed_norm_key")
+        self.fixed_norm = norm_index(fixed_norm_key) if fixed_norm_key else None
+        self.enable_norm_evolution = bool(config.get("enable_norm_evolution", self.fixed_norm is None))
+        self.enable_hierarchy = bool(config.get("enable_hierarchy", True))
+        self.enable_rebuild = bool(config.get("enable_rebuild", True))
         self.block_size = int(config.get("block_size", 6))
         self.block_rows = math.ceil(self.size / self.block_size)
         self.block_cols = math.ceil(self.size / self.block_size)
@@ -408,6 +460,7 @@ class LandUseNormSimulation:
         self.block_strength = [0.0 for _ in range(self.block_count)]
         self.block_age = [0 for _ in range(self.block_count)]
         self.cells: list[Cell] = []
+        self._neighbor_cache: dict[tuple[int, int], list[int]] = {}
         self.landuse_map = self._make_landuse_map()
         self._init_cells()
 
@@ -448,7 +501,7 @@ class LandUseNormSimulation:
             row, col = divmod(idx, self.size)
             norm = self.initial_norm_for_landuse(landuse)
             spec = LAND_USES[landuse]
-            storage_cap = spec["storage_cap"] * self.rng.uniform(0.78, 1.22)
+            storage_cap = spec["storage_cap"] * float(self.config.get("storage_capacity_multiplier", 1.0)) * self.rng.uniform(0.78, 1.22)
             center_bias = math.exp(-math.hypot(row - self.size * 0.34, col - self.size * 0.34) / (self.size * 0.18))
             critical_prob = critical_fraction * (0.55 + 2.8 * center_bias)
             cell = Cell(
@@ -464,6 +517,8 @@ class LandUseNormSimulation:
             self.cells.append(cell)
 
     def initial_norm_for_landuse(self, landuse: int) -> int:
+        if self.fixed_norm is not None:
+            return self.fixed_norm
         if landuse == 0:
             options = [0, 2, 7, 2]
         elif landuse == 1:
@@ -473,6 +528,9 @@ class LandUseNormSimulation:
         return self.rng.choice(options)
 
     def neighbor_indices(self, idx: int, radius: int) -> list[int]:
+        cache_key = (idx, radius)
+        if cache_key in self._neighbor_cache:
+            return self._neighbor_cache[cache_key]
         row, col = divmod(idx, self.size)
         out = []
         for dr in range(-radius, radius + 1):
@@ -483,15 +541,16 @@ class LandUseNormSimulation:
                 cc = col + dc
                 if 0 <= rr < self.size and 0 <= cc < self.size:
                     out.append(rr * self.size + cc)
+        self._neighbor_cache[cache_key] = out
         return out
 
     def block_norm(self, cell: Cell) -> int:
         return self.block_norms[cell.block_id]
 
-    def landuse_demand(self, landuse: int, hour: int) -> float:
+    def landuse_demand(self, landuse: int, step: int) -> float:
         spec = LAND_USES[landuse]
         curve = self.data.demand_curves[spec["demand_kind"]]
-        return curve[hour] * spec["demand_scale"]
+        return curve[step % len(curve)] * spec["demand_scale"]
 
     def landuse_solar(self, landuse: int, hour: int, step: int) -> float:
         spec = LAND_USES[landuse]
@@ -499,7 +558,7 @@ class LandUseNormSimulation:
         shock = 1.0
         if int(self.config["shock_start"]) <= step < int(self.config["shock_end"]):
             shock = float(self.config["solar_shock_factor"])
-        return curve[hour] * shock
+        return curve[step % len(curve)] * shock * float(self.config.get("solar_generation_multiplier", 1.0))
 
     def should_share(self, donor: Cell, receiver: Cell, distance: float) -> bool:
         norm = NORMS[donor.norm]["kind"]
@@ -526,6 +585,82 @@ class LandUseNormSimulation:
         if norm == "local":
             return receiver_good and distance <= (2.25 + (0.75 if institutional_bonus else 0.0))
         return False
+
+    def pool_link_allowed(self, a: Cell, b: Cell, distance: float) -> bool:
+        if not bool(self.config.get("enable_shared_storage_pool", False)):
+            return False
+        norm = NORMS[a.norm]["kind"]
+        b_good = b.reputation >= 0.5
+        if norm == "generous":
+            return True
+        if norm == "selfish":
+            return a.critical or b.critical
+        if norm in ("standing", "stern"):
+            return b_good or b.critical or a.critical
+        if norm == "shunning":
+            return b_good
+        if norm == "critical":
+            return a.critical or b.critical or b_good
+        if norm == "market":
+            return True
+        if norm == "local":
+            return b_good and distance <= 2.25
+        return False
+
+    def shared_storage_step(self, receivers: list[int], radius: int) -> dict[str, float]:
+        cooperation_attempts = 0
+        cooperation_successes = 0
+        pool_count = 0
+        pool_members = 0
+
+        for ridx in receivers:
+            receiver = self.cells[ridx]
+            if receiver.deficit <= 0.01:
+                continue
+            rr, rc = divmod(ridx, self.size)
+            candidates = []
+            for didx in self.neighbor_indices(ridx, radius):
+                donor = self.cells[didx]
+                if not donor.alive or donor.surplus <= 0.01:
+                    continue
+                dr, dc = divmod(didx, self.size)
+                dist = math.hypot(rr - dr, rc - dc)
+                if self.pool_link_allowed(donor, receiver, dist):
+                    candidates.append((dist, didx))
+            if not candidates:
+                continue
+            pool_count += 1
+            pool_members += 1 + len(candidates)
+            candidates.sort(key=lambda item: (item[0], -self.cells[item[1]].surplus))
+            for dist, didx in candidates:
+                if receiver.deficit <= 0.01:
+                    break
+                donor = self.cells[didx]
+                cooperation_attempts += 1
+                action = self.should_share(donor, receiver, dist) or self.pool_link_allowed(donor, receiver, dist)
+                donor.reputation = self.assess(donor, receiver, action)
+                if not action:
+                    donor.payoff -= 0.018 if receiver.critical else 0.006
+                    continue
+                efficiency = max(0.55, 1.0 - 0.05 * dist)
+                transfer = min(donor.surplus, receiver.deficit / max(0.1, efficiency))
+                if transfer <= 0.0:
+                    continue
+                received = transfer * efficiency
+                donor.storage -= transfer
+                donor.surplus = max(0.0, donor.storage - donor.storage_cap * 0.44)
+                receiver.deficit = max(0.0, receiver.deficit - received)
+                receiver.served += received
+                donor.payoff += 0.052 * (2.0 if receiver.critical else 1.0) - 0.014 * transfer
+                receiver.payoff += 0.07 * received / max(receiver.demand, 1e-6)
+                cooperation_successes += 1
+
+        return {
+            "cooperation_attempts": cooperation_attempts,
+            "cooperation_successes": cooperation_successes,
+            "pool_count": pool_count,
+            "pool_members": pool_members,
+        }
 
     def assess(self, donor: Cell, receiver: Cell, action: bool) -> float:
         receiver_good = receiver.reputation >= 0.5
@@ -558,7 +693,7 @@ class LandUseNormSimulation:
                 cell.deficit = 0.0
                 cell.surplus = 0.0
                 continue
-            demand = self.landuse_demand(cell.landuse, hour)
+            demand = self.landuse_demand(cell.landuse, step)
             solar = self.landuse_solar(cell.landuse, hour, step)
             available = cell.storage + solar + demand * grid_support
             served = min(demand, available)
@@ -583,44 +718,53 @@ class LandUseNormSimulation:
             )
         )
         radius = int(self.config["share_radius"])
-        for ridx in receivers:
-            receiver = self.cells[ridx]
-            candidates = []
-            rr, rc = divmod(ridx, self.size)
-            for didx in self.neighbor_indices(ridx, radius):
-                donor = self.cells[didx]
-                if not donor.alive or donor.surplus <= 0.03:
-                    continue
-                dr, dc = divmod(didx, self.size)
-                dist = math.hypot(rr - dr, rc - dc)
-                candidates.append((dist, didx))
-            candidates.sort(key=lambda item: (item[0], -self.cells[item[1]].surplus))
-            for dist, didx in candidates[:6]:
-                if receiver.deficit <= 0.01:
-                    break
-                donor = self.cells[didx]
-                cooperation_attempts += 1
-                action = self.should_share(donor, receiver, dist)
-                donor.reputation = self.assess(donor, receiver, action)
-                if not action:
-                    donor.payoff -= 0.018 if receiver.critical else 0.006
-                    continue
-                same_block_institution = (
-                    donor.block_id == receiver.block_id
-                    and self.block_norms[donor.block_id] == donor.norm
-                    and self.block_strength[donor.block_id] > 0.35
-                )
-                transfer = min(donor.surplus, receiver.deficit / max(0.1, 1.0 - 0.05 * dist))
-                received = transfer * (0.98 if same_block_institution else max(0.55, 1.0 - 0.05 * dist))
-                donor.storage -= transfer
-                donor.surplus = max(0.0, donor.storage - donor.storage_cap * 0.44)
-                receiver.deficit = max(0.0, receiver.deficit - received)
-                receiver.served += received
-                donor.payoff += 0.052 * (2.0 if receiver.critical else 1.0) - 0.014 * transfer
-                if same_block_institution:
-                    donor.payoff += 0.020
-                receiver.payoff += 0.07 * received / max(receiver.demand, 1e-6)
-                cooperation_successes += 1
+        pool_count = 0
+        pool_members = 0
+        if bool(self.config.get("enable_shared_storage_pool", False)):
+            pool_stats = self.shared_storage_step(receivers, radius)
+            cooperation_attempts = int(pool_stats["cooperation_attempts"])
+            cooperation_successes = int(pool_stats["cooperation_successes"])
+            pool_count = int(pool_stats["pool_count"])
+            pool_members = int(pool_stats["pool_members"])
+        else:
+            for ridx in receivers:
+                receiver = self.cells[ridx]
+                candidates = []
+                rr, rc = divmod(ridx, self.size)
+                for didx in self.neighbor_indices(ridx, radius):
+                    donor = self.cells[didx]
+                    if not donor.alive or donor.surplus <= 0.03:
+                        continue
+                    dr, dc = divmod(didx, self.size)
+                    dist = math.hypot(rr - dr, rc - dc)
+                    candidates.append((dist, didx))
+                candidates.sort(key=lambda item: (item[0], -self.cells[item[1]].surplus))
+                for dist, didx in candidates[:6]:
+                    if receiver.deficit <= 0.01:
+                        break
+                    donor = self.cells[didx]
+                    cooperation_attempts += 1
+                    action = self.should_share(donor, receiver, dist)
+                    donor.reputation = self.assess(donor, receiver, action)
+                    if not action:
+                        donor.payoff -= 0.018 if receiver.critical else 0.006
+                        continue
+                    same_block_institution = (
+                        donor.block_id == receiver.block_id
+                        and self.block_norms[donor.block_id] == donor.norm
+                        and self.block_strength[donor.block_id] > 0.35
+                    )
+                    transfer = min(donor.surplus, receiver.deficit / max(0.1, 1.0 - 0.05 * dist))
+                    received = transfer * (0.98 if same_block_institution else max(0.55, 1.0 - 0.05 * dist))
+                    donor.storage -= transfer
+                    donor.surplus = max(0.0, donor.storage - donor.storage_cap * 0.44)
+                    receiver.deficit = max(0.0, receiver.deficit - received)
+                    receiver.served += received
+                    donor.payoff += 0.052 * (2.0 if receiver.critical else 1.0) - 0.014 * transfer
+                    if same_block_institution:
+                        donor.payoff += 0.020
+                    receiver.payoff += 0.07 * received / max(receiver.demand, 1e-6)
+                    cooperation_successes += 1
 
         active_cells = [cell for cell in self.cells if cell.alive]
         total_demand = sum(cell.demand for cell in active_cells)
@@ -637,6 +781,8 @@ class LandUseNormSimulation:
             aligned = institution == cell.norm and institution >= 0
             recovery_rate = float(self.config.get("health_recovery_rate", 0.044))
             loss_rate = float(self.config.get("health_loss_rate", 0.046))
+            memory_retention = float(self.config.get("stress_memory_retention", 0.96))
+            cell.stress_memory = max(0.0, min(1.0, memory_retention * cell.stress_memory + (1.0 - memory_retention) * unmet))
             cell.health = max(0.0, min(1.0, cell.health + recovery_rate * (1.0 - unmet) - loss_rate * unmet))
             cell.payoff += 0.08 * (1.0 - unmet) + 0.035 * cell.reputation
             if aligned:
@@ -652,9 +798,14 @@ class LandUseNormSimulation:
             "critical_service": min(1.0, critical_served / max(critical_demand, 1e-6)),
             "cooperation_rate": cooperation_successes / max(1, cooperation_attempts),
             "cooperation_attempts": cooperation_attempts,
+            "cooperation_successes": cooperation_successes,
+            "pool_count": pool_count,
+            "pool_members": pool_members,
         }
 
     def rebuild_norm(self, idx: int, live_neighbors: list[int]) -> int:
+        if self.fixed_norm is not None:
+            return self.fixed_norm
         block_norm = self.block_norms[self.cells[idx].block_id]
         if block_norm >= 0 and self.rng.random() < float(self.config.get("hierarchy_rebuild_bias", 0.55)):
             return block_norm
@@ -670,10 +821,22 @@ class LandUseNormSimulation:
         imitations = 0
         rebuilds = 0
         hierarchy_adoptions = 0
+
+        if not self.enable_norm_evolution and not self.enable_rebuild:
+            if self.fixed_norm is not None:
+                for cell in self.cells:
+                    cell.norm = self.fixed_norm
+            return {
+                "norm_mutations": 0,
+                "norm_imitations": 0,
+                "building_rebuilds": 0,
+                "hierarchy_adoptions": 0,
+            }
+
         for idx, cell in enumerate(self.cells):
             if not cell.alive:
                 live_neighbors = [n for n in self.neighbor_indices(idx, 1) if self.cells[n].alive]
-                if live_neighbors and self.rng.random() < rebuild_rate:
+                if self.enable_rebuild and live_neighbors and self.rng.random() < rebuild_rate:
                     cell.alive = True
                     cell.norm = self.rebuild_norm(idx, live_neighbors)
                     cell.health = 0.45
@@ -681,8 +844,17 @@ class LandUseNormSimulation:
                     cell.reputation = 0.50
                     rebuilds += 1
                 continue
+            if not self.enable_norm_evolution:
+                if self.fixed_norm is not None:
+                    new_norms[idx] = self.fixed_norm
+                continue
             block_norm = self.block_norm(cell)
-            if block_norm >= 0 and cell.norm != block_norm and self.rng.random() < conformity_rate * self.block_strength[cell.block_id]:
+            if (
+                self.enable_hierarchy
+                and block_norm >= 0
+                and cell.norm != block_norm
+                and self.rng.random() < conformity_rate * self.block_strength[cell.block_id]
+            ):
                 new_norms[idx] = block_norm
                 hierarchy_adoptions += 1
                 continue
@@ -720,6 +892,15 @@ class LandUseNormSimulation:
         }
 
     def hierarchy_step(self) -> dict[str, int]:
+        if not self.enable_hierarchy:
+            self.block_norms = [-1 for _ in range(self.block_count)]
+            self.block_strength = [0.0 for _ in range(self.block_count)]
+            self.block_age = [0 for _ in range(self.block_count)]
+            return {
+                "hierarchy_births": 0,
+                "hierarchy_switches": 0,
+                "hierarchy_dissolutions": 0,
+            }
         threshold = float(self.config.get("hierarchy_threshold", 0.58))
         service_threshold = float(self.config.get("hierarchy_service_threshold", 0.72))
         changes = 0
@@ -799,6 +980,8 @@ class LandUseNormSimulation:
         landuse_counts = [[0] * len(NORMS) for _ in LAND_USES]
         landuse_service = [0.0] * len(LAND_USES)
         landuse_n = [0] * len(LAND_USES)
+        alive_stress = [cell.stress_memory for cell in alive]
+        critical_alive_stress = [cell.stress_memory for cell in critical_alive]
         for cell in alive:
             norm_counts[cell.norm] += 1
             landuse_counts[cell.landuse][cell.norm] += 1
@@ -812,8 +995,14 @@ class LandUseNormSimulation:
             "critical_fraction": len(critical) / len(self.cells),
             "served_fraction": stats["served_fraction"],
             "critical_service": stats["critical_service"],
+            "mean_stress_memory": sum(alive_stress) / max(1, len(alive_stress)),
+            "critical_stress_memory": sum(critical_alive_stress) / max(1, len(critical_alive_stress)),
+            "max_stress_memory": max(alive_stress) if alive_stress else 0.0,
             "cooperation_rate": stats["cooperation_rate"],
             "cooperation_attempts": stats["cooperation_attempts"],
+            "cooperation_successes": stats["cooperation_successes"],
+            "pool_count": int(stats.get("pool_count", 0)),
+            "pool_members": int(stats.get("pool_members", 0)),
             "norm_mutations": int(stats.get("norm_mutations", 0)),
             "norm_imitations": int(stats.get("norm_imitations", 0)),
             "building_rebuilds": int(stats.get("building_rebuilds", 0)),
@@ -840,6 +1029,11 @@ class LandUseNormSimulation:
                 landuse_service[i] / max(1, landuse_n[i])
                 for i in range(len(LAND_USES))
             ],
+            "model_mode": "static_fixed_norm" if self.fixed_norm is not None and not self.enable_norm_evolution else "evolving_norms",
+            "fixed_norm_key": NORMS[self.fixed_norm]["key"] if self.fixed_norm is not None else "",
+            "enable_hierarchy": self.enable_hierarchy,
+            "enable_rebuild": self.enable_rebuild,
+            "enable_shared_storage_pool": bool(self.config.get("enable_shared_storage_pool", False)),
         }
 
     def step(self, step: int) -> dict[str, Any]:
@@ -848,20 +1042,66 @@ class LandUseNormSimulation:
         stats.update(self.hierarchy_step())
         return self.metrics(step, stats)
 
+    def state_snapshot(self) -> list[tuple[bool, float, float]]:
+        return [(cell.alive, cell.health, cell.storage) for cell in self.cells]
+
     def run(self) -> SimulationResult:
         frames = []
         contact = []
         metrics = []
         steps = int(self.config["steps"])
+        convergence_window = int(self.config.get("convergence_window", 24))
+        convergence_epsilon = float(self.config.get("convergence_epsilon", 0.004))
+        convergence_required = int(self.config.get("convergence_required_stable_steps", 24))
+        min_convergence_step = int(self.config.get("min_convergence_step", convergence_window * 3))
+        stop_on_convergence = bool(self.config.get("stop_on_convergence", False))
+        stop_on_extinction = bool(self.config.get("stop_on_extinction", False))
+        snapshots: list[list[tuple[bool, float, float]]] = []
+        stable_steps = 0
+        render_stride = int(self.config.get("render_stride", 2))
+        contact_stride = max(1, steps // 12)
         for step in range(steps):
             row = self.step(step)
+            snapshot = self.state_snapshot()
+            if step >= convergence_window:
+                previous = snapshots[step - convergence_window]
+                daily_health_delta = max(
+                    abs(now[1] - old[1])
+                    for now, old in zip(snapshot, previous)
+                )
+                daily_storage_delta = max(
+                    abs(now[2] - old[2]) / max(cell.storage_cap, 1e-6)
+                    for cell, now, old in zip(self.cells, snapshot, previous)
+                )
+                daily_alive_changes = sum(1 for now, old in zip(snapshot, previous) if now[0] != old[0])
+            else:
+                daily_health_delta = 1.0
+                daily_storage_delta = 1.0
+                daily_alive_changes = len(self.cells)
+            stable = (
+                step >= min_convergence_step
+                and daily_alive_changes == 0
+                and daily_health_delta <= convergence_epsilon
+                and daily_storage_delta <= convergence_epsilon
+            )
+            stable_steps = stable_steps + 1 if stable else 0
+            row["daily_health_delta"] = daily_health_delta
+            row["daily_storage_delta"] = daily_storage_delta
+            row["daily_alive_changes"] = daily_alive_changes
+            row["stable_steps"] = stable_steps
+            row["converged"] = stable_steps >= convergence_required
             metrics.append(row)
-            if step % 2 == 0 or step == steps - 1:
+            snapshots.append(snapshot)
+            if step % render_stride == 0 or step == steps - 1 or row["converged"]:
                 image = render_state(self.cells, self.landuse_map, self.size, row)
                 frames.append(image)
-                if len(contact) < 12 and step % max(1, steps // 12) == 0:
+                if len(contact) < 12 and step % contact_stride == 0:
                     contact.append(image)
-        return SimulationResult(frames, contact, metrics, self.cells, self.data)
+            if row["converged"] and stop_on_convergence:
+                break
+            if stop_on_extinction and row["alive_fraction"] <= 0.0:
+                break
+        return SimulationResult(frames, contact, metrics, self.cells, self.data, self.config)
 
 
 def blend(color: tuple[int, int, int], amount: float) -> tuple[int, int, int]:
@@ -933,7 +1173,8 @@ def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: d
     height = panel + margin * 2 + footer
     image = Image.new("RGB", (width, height), (248, 250, 252))
     draw = ImageDraw.Draw(image)
-    titles = ["land-use attribute", "individual norm + hierarchy", "service + health"]
+    norm_title = "static SELF rule" if metric.get("model_mode") == "static_fixed_norm" else "individual norm + hierarchy"
+    titles = ["land-use attribute", norm_title, "service + health"]
     for pidx, title in enumerate(titles):
         x0 = margin + pidx * (panel + gap)
         y0 = margin + 16
@@ -974,7 +1215,8 @@ def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: d
         f"step={metric['step']:03d} served={metric['served_fraction']:.2f} "
         f"critical={metric['critical_survival']:.2f} coop={metric['cooperation_rate']:.2f} "
         f"hier={metric['hierarchy_coverage']:.2f} align={metric['hierarchy_alignment']:.2f} "
-        f"top_norm={NORMS[top_norm]['key']} {norm_freq[top_norm]:.2f}"
+        f"top_norm={NORMS[top_norm]['key']} {norm_freq[top_norm]:.2f} "
+        f"converged={metric.get('converged', False)}"
     )
     draw.text((margin, height - footer + 16), footer_text, fill=(15, 23, 42))
     return image
@@ -1254,7 +1496,7 @@ def write_hierarchy_canopy_png(cells: list[Cell], size: int, metric: dict[str, A
 
 def write_csv(metrics: list[dict[str, Any]], path: Path) -> None:
     with path.open("w", newline="", encoding="utf-8") as f:
-        fields = [
+        scalar_fields = [
             "step",
             "alive_fraction",
             "critical_survival",
@@ -1263,6 +1505,12 @@ def write_csv(metrics: list[dict[str, Any]], path: Path) -> None:
             "critical_service",
             "cooperation_rate",
             "cooperation_attempts",
+            "cooperation_successes",
+            "pool_count",
+            "pool_members",
+            "mean_stress_memory",
+            "critical_stress_memory",
+            "max_stress_memory",
             "norm_mutations",
             "norm_imitations",
             "building_rebuilds",
@@ -1273,11 +1521,21 @@ def write_csv(metrics: list[dict[str, Any]], path: Path) -> None:
             "hierarchy_count",
             "hierarchy_coverage",
             "hierarchy_alignment",
-        ] + [f"norm_{norm['key']}" for norm in NORMS] + [f"hierarchy_{norm['key']}" for norm in NORMS]
+            "daily_health_delta",
+            "daily_storage_delta",
+            "daily_alive_changes",
+            "stable_steps",
+            "converged",
+            "model_mode",
+            "fixed_norm_key",
+            "enable_hierarchy",
+            "enable_rebuild",
+        ]
+        fields = scalar_fields + [f"norm_{norm['key']}" for norm in NORMS] + [f"hierarchy_{norm['key']}" for norm in NORMS]
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         for row in metrics:
-            flat = {field: row[field] for field in fields[:18]}
+            flat = {field: row.get(field, "") for field in scalar_fields}
             for idx, norm in enumerate(NORMS):
                 flat[f"norm_{norm['key']}"] = row["norm_frequencies"][idx]
                 flat[f"hierarchy_{norm['key']}"] = row["hierarchy_norm_frequencies"][idx]
@@ -1320,32 +1578,75 @@ def draw_series_panel(
 def write_metrics_png(metrics: list[dict[str, Any]], path: Path) -> None:
     image = Image.new("RGB", (1160, 760), (248, 250, 252))
     draw = ImageDraw.Draw(image)
-    draw.text((36, 24), "Land-use conditioned norm hierarchy metrics", fill=(15, 23, 42))
+    static_mode = metrics[-1].get("model_mode") == "static_fixed_norm"
+    title = "Static SELF-rule energy ABM metrics" if static_mode else "Land-use conditioned norm hierarchy metrics"
+    draw.text((36, 24), title, fill=(15, 23, 42))
     resilience_series = [
         ("alive", "active buildings", (15, 23, 42), [row["alive_fraction"] for row in metrics]),
         ("served", "load served", (22, 163, 74), [row["served_fraction"] for row in metrics]),
         ("critical", "critical survival", (220, 38, 38), [row["critical_survival"] for row in metrics]),
-        ("hier", "hierarchy coverage", (147, 51, 234), [row["hierarchy_coverage"] for row in metrics]),
-        ("align", "norm hierarchy alignment", (14, 165, 233), [row["hierarchy_alignment"] for row in metrics]),
     ]
-    draw.text((72, 70), "system and hierarchy", fill=(15, 23, 42))
+    if not static_mode:
+        resilience_series.extend([
+            ("hier", "hierarchy coverage", (147, 51, 234), [row["hierarchy_coverage"] for row in metrics]),
+            ("align", "norm hierarchy alignment", (14, 165, 233), [row["hierarchy_alignment"] for row in metrics]),
+        ])
+    draw.text((72, 70), "system resilience" if static_mode else "system and hierarchy", fill=(15, 23, 42))
     draw_series_panel(draw, metrics, 72, 96, 1000, 250, resilience_series)
 
-    norm_series = [
-        (
-            norm["key"],
-            norm["name"],
-            norm["color"],
-            [row["norm_frequencies"][idx] for row in metrics],
-        )
-        for idx, norm in enumerate(NORMS)
-    ]
-    draw.text((72, 396), "individual norm frequencies among surviving buildings", fill=(15, 23, 42))
-    draw_series_panel(draw, metrics, 72, 422, 1000, 220, norm_series)
+    if static_mode:
+        convergence_series = [
+            ("health", "1 - daily health delta", (37, 99, 235), [max(0.0, 1.0 - row["daily_health_delta"] / 0.05) for row in metrics]),
+            ("storage", "1 - daily storage delta", (14, 165, 233), [max(0.0, 1.0 - row["daily_storage_delta"] / 0.05) for row in metrics]),
+            ("stable", "stable step ratio", (147, 51, 234), [min(1.0, row["stable_steps"] / max(1, int(metrics[-1].get("stable_steps", 1)))) for row in metrics]),
+        ]
+        draw.text((72, 396), "daily-cycle convergence diagnostics", fill=(15, 23, 42))
+        draw_series_panel(draw, metrics, 72, 422, 1000, 220, convergence_series)
+    else:
+        norm_series = [
+            (
+                norm["key"],
+                norm["name"],
+                norm["color"],
+                [row["norm_frequencies"][idx] for row in metrics],
+            )
+            for idx, norm in enumerate(NORMS)
+        ]
+        draw.text((72, 396), "individual norm frequencies among surviving buildings", fill=(15, 23, 42))
+        draw_series_panel(draw, metrics, 72, 422, 1000, 220, norm_series)
     image.save(path)
 
 
 def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
+    static_mode = summary.get("model_mode") == "static_fixed_norm"
+    page_title = "Static SELF-Rule Energy ABM" if static_mode else "Land-Use Conditioned Norm Hierarchy"
+    intro = (
+        "All buildings use the fixed SELF rule. Norm mutation, imitation, hierarchy, and rebuild are disabled. "
+        "The run stops when the daily state approximately repeats, or when the maximum step count is reached."
+        if static_mode
+        else (
+            "Land use is a fixed cell attribute that shapes demand and generation. "
+            "Buildings adapt norms quickly. Rebuild is slow. Block-level norms can emerge from local individual norm success "
+            "and then bias future behavior."
+        )
+    )
+    hierarchy_panels = "" if static_mode else """
+    <div class="panel">
+      <h2>Hierarchy Rule Map</h2>
+      <img src="landuse_norm_hierarchy_map.png" alt="annotated hierarchy rule map">
+    </div>
+    <div class="panel">
+      <h2>Hierarchy Canopy</h2>
+      <img src="landuse_norm_hierarchy_canopy.png" alt="2D hierarchy canopy">
+    </div>
+"""
+    convergence_summary = (
+        f", converged={summary.get('converged', False)}, stable steps={summary.get('stable_steps', 0)}, "
+        f"daily health delta={summary.get('daily_health_delta', 0.0):.4f}, "
+        f"daily storage delta={summary.get('daily_storage_delta', 0.0):.4f}"
+        if static_mode
+        else ""
+    )
     norm_rows = "\n".join(
         f"<tr><td>{norm['key']}</td><td>{norm['name']}</td><td><span style='display:inline-block;width:14px;height:14px;background:rgb{norm['color']}'></span></td></tr>"
         for norm in NORMS
@@ -1359,7 +1660,7 @@ def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Land-Use Norm Evolution</title>
+  <title>{page_title}</title>
   <style>
     body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #eef2f7; color: #0f172a; }}
     main {{ max-width: 1120px; margin: 0 auto; padding: 28px; }}
@@ -1374,19 +1675,15 @@ def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
 </head>
 <body>
   <main>
-    <h1>Land-Use Conditioned Norm Hierarchy</h1>
-    <p>
-      Land use is a fixed cell attribute that shapes demand and generation.
-      Buildings adapt norms quickly. Rebuild is slow. Block-level norms can
-      emerge from local individual norm success and then bias future behavior.
-    </p>
+    <h1>{page_title}</h1>
+    <p>{intro}</p>
     <div class="panel">
       <strong>Final summary:</strong>
       served={summary['served_fraction']:.2f},
       critical survival={summary['critical_survival']:.2f},
       hierarchy coverage={summary['hierarchy_coverage']:.2f},
       alignment={summary['hierarchy_alignment']:.2f},
-      top norm={summary['top_norm']}.
+      top norm={summary['top_norm']}{convergence_summary}.
     </div>
     <div class="panel">
       <h2>Evolution</h2>
@@ -1400,14 +1697,7 @@ def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
       <h2>Metrics</h2>
       <img src="landuse_norm_metrics.png" alt="land-use norm metrics">
     </div>
-    <div class="panel">
-      <h2>Hierarchy Rule Map</h2>
-      <img src="landuse_norm_hierarchy_map.png" alt="annotated hierarchy rule map">
-    </div>
-    <div class="panel">
-      <h2>Hierarchy Canopy</h2>
-      <img src="landuse_norm_hierarchy_canopy.png" alt="2D hierarchy canopy">
-    </div>
+    {hierarchy_panels}
     <div class="panel">
       <h2>Norms</h2>
       <table><tbody>{norm_rows}</tbody></table>
