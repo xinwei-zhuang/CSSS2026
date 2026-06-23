@@ -583,7 +583,8 @@ class LandUseNormSimulation:
         if norm == "market":
             return receiver.deficit * (2.0 if receiver.critical else 1.0) > 0.30 + 0.08 * distance - threshold_shift
         if norm == "local":
-            return receiver_good and distance <= (2.25 + (0.75 if institutional_bonus else 0.0))
+            local_radius = float(self.config.get("local_norm_radius", self.config.get("share_radius", 2)))
+            return receiver_good and distance <= (local_radius + (0.75 if institutional_bonus else 0.0))
         return False
 
     def pool_link_allowed(self, a: Cell, b: Cell, distance: float) -> bool:
@@ -604,8 +605,18 @@ class LandUseNormSimulation:
         if norm == "market":
             return True
         if norm == "local":
-            return b_good and distance <= 2.25
+            local_radius = float(self.config.get("local_norm_radius", self.config.get("share_radius", 2)))
+            return b_good and distance <= local_radius
         return False
+
+    def sharing_efficiency(self, distance: float) -> float:
+        radius = max(1e-6, float(self.config.get("share_radius", 1)))
+        minimum = float(self.config.get("sharing_min_efficiency", 0.35))
+        decay = float(self.config.get("sharing_efficiency_decay", 0.65))
+        exponent = float(self.config.get("sharing_loss_exponent", 1.0))
+        normalized = min(1.0, max(0.0, distance / radius))
+        efficiency = 1.0 - decay * (normalized ** exponent)
+        return max(minimum, min(1.0, efficiency))
 
     def shared_storage_step(self, receivers: list[int], radius: int) -> dict[str, float]:
         cooperation_attempts = 0
@@ -631,8 +642,9 @@ class LandUseNormSimulation:
                 continue
             pool_count += 1
             pool_members += 1 + len(candidates)
-            candidates.sort(key=lambda item: (item[0], -self.cells[item[1]].surplus))
-            for dist, didx in candidates:
+            candidates.sort(key=lambda item: (-self.cells[item[1]].surplus * self.sharing_efficiency(item[0]), item[0]))
+            max_donors = int(self.config.get("max_pool_donors_per_receiver", 24))
+            for dist, didx in candidates[:max_donors]:
                 if receiver.deficit <= 0.01:
                     break
                 donor = self.cells[didx]
@@ -642,7 +654,7 @@ class LandUseNormSimulation:
                 if not action:
                     donor.payoff -= 0.018 if receiver.critical else 0.006
                     continue
-                efficiency = max(0.55, 1.0 - 0.05 * dist)
+                efficiency = self.sharing_efficiency(dist)
                 transfer = min(donor.surplus, receiver.deficit / max(0.1, efficiency))
                 if transfer <= 0.0:
                     continue
@@ -738,8 +750,9 @@ class LandUseNormSimulation:
                     dr, dc = divmod(didx, self.size)
                     dist = math.hypot(rr - dr, rc - dc)
                     candidates.append((dist, didx))
-                candidates.sort(key=lambda item: (item[0], -self.cells[item[1]].surplus))
-                for dist, didx in candidates[:6]:
+                candidates.sort(key=lambda item: (-self.cells[item[1]].surplus * self.sharing_efficiency(item[0]), item[0]))
+                max_donors = int(self.config.get("max_direct_donors_per_receiver", 12))
+                for dist, didx in candidates[:max_donors]:
                     if receiver.deficit <= 0.01:
                         break
                     donor = self.cells[didx]
@@ -754,8 +767,9 @@ class LandUseNormSimulation:
                         and self.block_norms[donor.block_id] == donor.norm
                         and self.block_strength[donor.block_id] > 0.35
                     )
-                    transfer = min(donor.surplus, receiver.deficit / max(0.1, 1.0 - 0.05 * dist))
-                    received = transfer * (0.98 if same_block_institution else max(0.55, 1.0 - 0.05 * dist))
+                    efficiency = 0.98 if same_block_institution else self.sharing_efficiency(dist)
+                    transfer = min(donor.surplus, receiver.deficit / max(0.1, efficiency))
+                    received = transfer * efficiency
                     donor.storage -= transfer
                     donor.surplus = max(0.0, donor.storage - donor.storage_cap * 0.44)
                     receiver.deficit = max(0.0, receiver.deficit - received)
@@ -1034,6 +1048,10 @@ class LandUseNormSimulation:
             "enable_hierarchy": self.enable_hierarchy,
             "enable_rebuild": self.enable_rebuild,
             "enable_shared_storage_pool": bool(self.config.get("enable_shared_storage_pool", False)),
+            "share_radius": int(self.config.get("share_radius", 0)),
+            "sharing_min_efficiency": float(self.config.get("sharing_min_efficiency", 0.0)),
+            "sharing_efficiency_decay": float(self.config.get("sharing_efficiency_decay", 0.0)),
+            "sharing_loss_exponent": float(self.config.get("sharing_loss_exponent", 1.0)),
         }
 
     def step(self, step: int) -> dict[str, Any]:
@@ -1530,6 +1548,11 @@ def write_csv(metrics: list[dict[str, Any]], path: Path) -> None:
             "fixed_norm_key",
             "enable_hierarchy",
             "enable_rebuild",
+            "enable_shared_storage_pool",
+            "share_radius",
+            "sharing_min_efficiency",
+            "sharing_efficiency_decay",
+            "sharing_loss_exponent",
         ]
         fields = scalar_fields + [f"norm_{norm['key']}" for norm in NORMS] + [f"hierarchy_{norm['key']}" for norm in NORMS]
         writer = csv.DictWriter(f, fieldnames=fields)

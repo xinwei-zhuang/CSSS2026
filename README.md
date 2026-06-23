@@ -31,7 +31,10 @@ Important default settings:
 | `grid_size` | 36 | 36 x 36 building cells |
 | `steps` | 8761 | one full hourly annual profile |
 | `critical_fraction` | 0.10 | fraction of buildings tagged as critical loads |
-| `share_radius` | 2 | local sharing neighborhood |
+| `share_radius` | 10 | maximum local sharing distance in cells |
+| `sharing_min_efficiency` | 0.35 | lower bound on delivered sharing efficiency |
+| `sharing_efficiency_decay` | 0.65 | proportional distance loss at the edge of the radius |
+| `sharing_loss_exponent` | 1.0 | linear distance-loss curve |
 | `enable_shared_storage_pool` | true | nearby surplus buildings can form a local pool |
 | `normal_grid_support` | 0.0 | no external grid in normal periods |
 | `outage_grid_support` | 0.0 | no external grid in outage periods |
@@ -61,6 +64,26 @@ building roof area * hourly solar radiation * PV efficiency * usable roof fracti
 
 Large-area buildings can therefore produce surplus and share with nearby
 buildings.
+
+## Distance-Decayed Sharing
+
+Surplus can be shared within a 10-cell radius. Sharing is not lossless: the
+delivered energy decays with distance. For a donor-receiver distance \(d\), the
+delivery efficiency is:
+
+```text
+efficiency(d) = max(min_efficiency, 1 - decay * (d / share_radius)^exponent)
+```
+
+With the current settings:
+
+```text
+efficiency(d) = max(0.35, 1 - 0.65 * d / 10)
+```
+
+So nearby sharing is almost lossless, while sharing from the edge of the radius
+delivers about 35% of the transferred energy. Donors are ranked by effective
+deliverable surplus, so large nearby surplus is tried first.
 
 ## Fixed Norms
 
@@ -118,7 +141,7 @@ Main metrics are written to CSV and JSON.
 | `mean_stress_memory` | final average stress memory among alive buildings |
 | `critical_stress_memory` | final average stress memory among alive critical buildings |
 | `annual_cooperation_successes` | total successful sharing events over the year |
-| `mean_pool_members` | average local shared-storage pool size during final week |
+| `mean_pool_members` | average donor memberships in local shared-storage requests during final week |
 
 Here, resilience means critical-load survival under no external grid support,
 reported together with annual service fraction and stress memory. In other
@@ -153,12 +176,15 @@ Key files:
 static_shared_pool_annual_summary.csv
 static_shared_pool_annual_summary.json
 static_shared_pool_annual_summary.png
+combined_results.html
 ```
 
-The latest sweep shows that most non-selfish rules produce similar final alive
-fractions, while `SELF` has slightly lower total survival but the highest
-critical-load survival. This makes `SELF` a useful baseline for testing whether
-adaptive rule evolution can improve overall survival without sacrificing
+The latest sweep uses `share_radius = 10` with linear distance-decayed sharing.
+Broad-sharing rules now improve overall survival: `SHUN`, `DISC`, `SJ`, and
+`CRIT` reach alive fractions around 0.69. `SELF` still produces fewer sharing
+events and lower total survival, but it has the strongest critical-load
+survival at 0.824. This makes the static selfish baseline useful for testing
+whether adaptive rule evolution can improve total survival without sacrificing
 critical-load protection.
 
 ## GitHub Status
