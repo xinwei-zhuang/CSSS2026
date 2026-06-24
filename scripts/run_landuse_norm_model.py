@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from landuse_norm_model import NORMS, run_from_config  # noqa: E402
+from landuse_norm_model import NORMS, normalized_resilience_auc, run_from_config  # noqa: E402
 
 
 def main() -> None:
@@ -22,12 +22,8 @@ def main() -> None:
     top_norm = max(range(len(NORMS)), key=lambda idx: final["norm_frequencies"][idx])
     print(f"out_dir={out_dir.resolve()}")
     print(f"steps={len(result.metrics)}")
-    print(f"served_fraction={final['served_fraction']:.3f}")
-    print(f"critical_survival={final['critical_survival']:.3f}")
-    print(f"cooperation_rate={final['cooperation_rate']:.3f}")
-    print(f"cooperation_successes={final.get('cooperation_successes', 0)}")
-    print(f"hierarchy_coverage={final['hierarchy_coverage']:.3f}")
-    print(f"hierarchy_alignment={final['hierarchy_alignment']:.3f}")
+    print(f"alive_buildings_percent={100.0 * final['alive_fraction']:.1f}")
+    print(f"resilience_normalized={normalized_resilience_auc(result.metrics):.3f}")
     print(f"model_mode={final.get('model_mode', 'evolving_norms')}")
     print(f"fixed_norm_key={final.get('fixed_norm_key', '')}")
     print(f"converged={final.get('converged', False)}")

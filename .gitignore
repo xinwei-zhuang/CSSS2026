@@ -13,6 +13,13 @@ __pycache__/
 # Model outputs
 models/
 outputs/
+!outputs/
+outputs/*
+!outputs/building_traces_16x16.html
+!outputs/real_patch/
+outputs/real_patch/*
+!outputs/real_patch/real_patch_cells.csv
+!outputs/real_patch/real_patch_map.png
 results/
 !results/
 results/*

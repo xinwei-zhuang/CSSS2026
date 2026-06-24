@@ -9,6 +9,8 @@
     "enable_shared_storage_pool": true,
     "use_full_year_profiles": true,
     "use_full_year_solar": true,
+    "use_real_building_patch": true,
+    "real_patch_corner_fraction": 0.25,
     "render_stride": 168,
     "share_radius": 10,
     "local_norm_radius": 3,
@@ -33,6 +35,7 @@
     "solar_generation_multiplier": 4.0,
     "normal_grid_support": 0.0,
     "outage_grid_support": 0.0,
+    "outage_profile_csv": "data/outage_profiles/periodic_no_solar_stress.csv",
     "shock_start": 99999,
     "shock_end": 100000,
     "solar_shock_factor": 1.0,
@@ -50,5 +53,5 @@
     "pv_efficiency": 0.2,
     "roof_usable_fraction": 0.65,
     "profile_sample_size": 240,
-    "out_dir": "results/static_shared_pool_annual_no_grid"
+    "out_dir": "results/static_shared_pool_annual_stress_no_grid"
 }

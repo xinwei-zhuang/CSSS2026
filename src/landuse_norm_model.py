@@ -44,60 +44,20 @@ LAND_USES = [
 
 NORMS = [
     {
-        "key": "ALLC",
-        "name": "generous",
-        "color": (37, 99, 235),
-        "kind": "generous",
-        "assessment": (1, 0, 1, 0),
-    },
-    {
         "key": "SELF",
         "name": "selfish",
+        "description": "Does not share.",
         "color": (120, 113, 108),
         "kind": "selfish",
         "assessment": (1, 1, 1, 1),
     },
     {
-        "key": "DISC",
-        "name": "standing",
-        "color": (22, 163, 74),
-        "kind": "standing",
-        "assessment": (1, 0, 1, 1),
-    },
-    {
-        "key": "SJ",
-        "name": "stern judging",
-        "color": (147, 51, 234),
-        "kind": "stern",
-        "assessment": (1, 0, 0, 1),
-    },
-    {
-        "key": "SHUN",
-        "name": "shunning",
-        "color": (220, 38, 38),
-        "kind": "shunning",
-        "assessment": (1, 0, 0, 0),
-    },
-    {
-        "key": "CRIT",
-        "name": "critical first",
-        "color": (234, 88, 12),
-        "kind": "critical",
-        "assessment": (1, 0, 1, 1),
-    },
-    {
-        "key": "MKT",
-        "name": "market",
-        "color": (14, 165, 233),
-        "kind": "market",
-        "assessment": (1, 0, 1, 1),
-    },
-    {
-        "key": "LOCAL",
-        "name": "neighbor loyal",
-        "color": (202, 138, 4),
-        "kind": "local",
-        "assessment": (1, 0, 1, 1),
+        "key": "GEN",
+        "name": "generous",
+        "description": "Shares whenever possible.",
+        "color": (37, 99, 235),
+        "kind": "generous",
+        "assessment": (1, 0, 1, 0),
     },
 ]
 
@@ -116,7 +76,7 @@ class Cell:
     norm: int
     block_id: int
     alive: bool = True
-    critical: bool = False
+    resilient: bool = True
     reputation: float = 0.62
     health: float = 1.0
     storage: float = 0.0
@@ -127,13 +87,21 @@ class Cell:
     surplus: float = 0.0
     payoff: float = 0.0
     stress_memory: float = 0.0
+    cumulative_demand: float = 0.0
+    cumulative_deficit: float = 0.0
+    demand_curve: list[float] | None = None
+    solar_curve: list[float] | None = None
 
 
 @dataclass
 class DataBundle:
     demand_curves: dict[str, list[float]]
     solar_curves: dict[str, list[float]]
+    outage_severity: list[float]
+    outage_solar_factor: list[float]
+    outage_grid_support: list[float]
     roof_area_m2: dict[str, float]
+    cell_specs: list[dict[str, Any]] | None
     sources: dict[str, str]
 
 
@@ -333,6 +301,158 @@ def estimate_roof_area(path: str, sample_size: int, usable_fraction: float) -> d
     return out
 
 
+def landuse_index(profile_type: str, landuse_final: str) -> int:
+    text = f"{profile_type} {landuse_final}".lower()
+    if "industrial" in text or "pdr" in text or "mips" in text:
+        return 2
+    if "commercial" in text or "retail" in text or "office" in text or "hotel" in text or "mixed" in text:
+        return 1
+    return 0
+
+
+def roof_area_from_row(row: dict[str, str], usable_fraction: float) -> float:
+    sqft = safe_float(row.get("bldgsqft"), 0.0)
+    floors = max(1.0, safe_float(row.get("floor"), 1.0))
+    if sqft <= 0:
+        return 125.0
+    return max(25.0, sqft / floors * 0.092903 * usable_fraction)
+
+
+def load_profile_curves(path: str, profile_ids: set[str]) -> dict[str, list[float]]:
+    csv_path = Path(path)
+    if not csv_path.exists() or not profile_ids:
+        return {}
+    curves: dict[str, list[float]] = {}
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        time_cols = [name for name in reader.fieldnames or [] if name.startswith("t")]
+        for row in reader:
+            profile_id = row.get("profile_id", "")
+            if profile_id not in profile_ids:
+                continue
+            curves[profile_id] = [safe_float(row.get(col), 0.0) for col in time_cols]
+            if len(curves) >= len(profile_ids):
+                break
+    return curves
+
+
+def select_real_building_patch(
+    metadata_csv: str,
+    demand_csv: str,
+    grid_size: int,
+    usable_fraction: float,
+    corner_fraction: float = 0.25,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    metadata_path = Path(metadata_csv)
+    if not metadata_path.exists():
+        return [], {"real_patch_source": f"missing:{metadata_csv}"}
+
+    rows: list[dict[str, Any]] = []
+    with metadata_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            lon = safe_float(row.get("centroid_lon"), float("nan"))
+            lat = safe_float(row.get("centroid_lat"), float("nan"))
+            if not math.isfinite(lon) or not math.isfinite(lat):
+                continue
+            if not (-123.0 < lon < -122.0 and 37.0 < lat < 38.5):
+                continue
+            rows.append(
+                {
+                    "row": row,
+                    "lon": lon,
+                    "lat": lat,
+                    "profile_id": row.get("profile_id", ""),
+                    "landuse": landuse_index(row.get("profile_type", ""), row.get("landuse_final", "")),
+                    "roof_area_m2": roof_area_from_row(row, usable_fraction),
+                }
+            )
+    if not rows:
+        return [], {"real_patch_source": str(metadata_path), "real_patch_count": "0"}
+
+    lon_min = min(item["lon"] for item in rows)
+    lon_max = max(item["lon"] for item in rows)
+    lat_min = min(item["lat"] for item in rows)
+    lat_max = max(item["lat"] for item in rows)
+    target_count = grid_size * grid_size
+
+    selected_candidates: list[dict[str, Any]] = []
+    used_fraction = corner_fraction
+    for fraction in [corner_fraction, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60]:
+        lon0 = lon_max - (lon_max - lon_min) * fraction
+        lat0 = lat_max - (lat_max - lat_min) * fraction
+        selected_candidates = [
+            item for item in rows
+            if lon0 <= item["lon"] <= lon_max and lat0 <= item["lat"] <= lat_max
+        ]
+        used_fraction = fraction
+        if len(selected_candidates) >= target_count:
+            break
+    if len(selected_candidates) < target_count:
+        selected_candidates = sorted(rows, key=lambda item: (-(item["lon"] - lon_min), -(item["lat"] - lat_min)))[:target_count]
+
+    patch_lon_min = min(item["lon"] for item in selected_candidates)
+    patch_lon_max = max(item["lon"] for item in selected_candidates)
+    patch_lat_min = min(item["lat"] for item in selected_candidates)
+    patch_lat_max = max(item["lat"] for item in selected_candidates)
+    profile_ids = {item["profile_id"] for item in selected_candidates if item["profile_id"]}
+    profile_curves = load_profile_curves(demand_csv, profile_ids)
+
+    chosen: list[dict[str, Any]] = []
+    unused = selected_candidates[:]
+    for row in range(grid_size):
+        for col in range(grid_size):
+            x = patch_lon_min + (patch_lon_max - patch_lon_min) * ((col + 0.5) / grid_size)
+            y = patch_lat_max - (patch_lat_max - patch_lat_min) * ((row + 0.5) / grid_size)
+            best_idx = min(
+                range(len(unused)),
+                key=lambda idx: (unused[idx]["lon"] - x) ** 2 + (unused[idx]["lat"] - y) ** 2,
+            )
+            chosen.append(unused.pop(best_idx))
+            if not unused:
+                unused = selected_candidates[:]
+
+    raw_curves: list[list[float]] = []
+    for item in chosen:
+        curve = profile_curves.get(item["profile_id"])
+        if not curve:
+            daily = fallback_demand(LAND_USES[item["landuse"]]["demand_kind"])
+            curve = [daily[i % 24] for i in range(8760)]
+        raw_curves.append(curve)
+    target_len = min(len(curve) for curve in raw_curves)
+    demand_reference = sum(sum(curve[:target_len]) / target_len for curve in raw_curves) / len(raw_curves)
+    if demand_reference <= 0:
+        demand_reference = 1.0
+
+    specs = []
+    for item, curve in zip(chosen, raw_curves):
+        specs.append(
+            {
+                "building_id": item["row"].get("building_id", ""),
+                "profile_id": item["profile_id"],
+                "lon": item["lon"],
+                "lat": item["lat"],
+                "landuse": item["landuse"],
+                "roof_area_m2": item["roof_area_m2"],
+                "demand_curve": [max(0.0, value / demand_reference) for value in curve[:target_len]],
+            }
+        )
+    sources = {
+        "real_patch_source": str(metadata_path),
+        "real_patch_corner": "upper_right",
+        "real_patch_corner_fraction": f"{used_fraction:.2f}",
+        "real_patch_candidates": str(len(selected_candidates)),
+        "real_patch_cells": str(len(specs)),
+        "real_patch_bbox": json.dumps({
+            "lon_min": patch_lon_min,
+            "lon_max": patch_lon_max,
+            "lat_min": patch_lat_min,
+            "lat_max": patch_lat_max,
+        }),
+    }
+    return specs, sources
+
+
 def read_epw_24h(path: str, month: int, day: int) -> tuple[list[float], list[float], str]:
     epw_path = Path(path)
     if not epw_path.exists():
@@ -397,6 +517,46 @@ def pv_per_m2_kw(ghi: list[float], temp_air: list[float], efficiency: float) -> 
     return out
 
 
+def load_outage_profile(path: str | None, target_len: int) -> tuple[list[float], list[float], list[float], str]:
+    if not path:
+        return [0.0] * target_len, [1.0] * target_len, [0.0] * target_len, ""
+    csv_path = Path(path)
+    if not csv_path.exists():
+        return [0.0] * target_len, [1.0] * target_len, [0.0] * target_len, f"missing:{path}"
+
+    severities: list[float] = []
+    solar_factors: list[float] = []
+    grid_support: list[float] = []
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            severity = safe_float(
+                row.get("outage_severity", row.get("severity", row.get("outage_fraction", row.get("stress", "0")))),
+                0.0,
+            )
+            severity = max(0.0, min(1.0, severity))
+            solar_factor = safe_float(row.get("solar_factor", ""), 1.0 - 0.65 * severity)
+            grid = safe_float(row.get("grid_support", ""), 0.0)
+            severities.append(severity)
+            solar_factors.append(max(0.0, min(1.0, solar_factor)))
+            grid_support.append(max(0.0, min(1.0, grid)))
+
+    if not severities:
+        return [0.0] * target_len, [1.0] * target_len, [0.0] * target_len, str(csv_path)
+
+    def resize(values: list[float], fallback: float) -> list[float]:
+        if len(values) >= target_len:
+            return values[:target_len]
+        return [values[i % len(values)] if values else fallback for i in range(target_len)]
+
+    return (
+        resize(severities, 0.0),
+        resize(solar_factors, 1.0),
+        resize(grid_support, 0.0),
+        str(csv_path),
+    )
+
+
 def load_data(config: dict[str, Any]) -> DataBundle:
     full_series = bool(config.get("use_full_year_profiles", False))
     demand_curves, profile_counts = load_demand_curves(
@@ -426,17 +586,63 @@ def load_data(config: dict[str, Any]) -> DataBundle:
         kind: [value / reference for value in values]
         for kind, values in raw_solar.items()
     }
+    cell_specs = None
+    real_patch_sources: dict[str, str] = {}
+    if bool(config.get("use_real_building_patch", False)):
+        cell_specs, real_patch_sources = select_real_building_patch(
+            config["metadata_csv"],
+            config["demand_csv"],
+            int(config["grid_size"]),
+            float(config["roof_usable_fraction"]),
+            float(config.get("real_patch_corner_fraction", 0.25)),
+        )
+        if cell_specs:
+            avg_roof = sum(spec["roof_area_m2"] for spec in cell_specs) / len(cell_specs)
+            if avg_roof <= 0:
+                avg_roof = 1.0
+            solar_curves_by_area = {
+                kind: [value / max(roof[kind], 1e-6) for value in values]
+                for kind, values in raw_solar.items()
+            }
+            for spec in cell_specs:
+                landuse = LAND_USES[int(spec["landuse"])]["roof_kind"]
+                per_m2 = solar_curves_by_area.get(landuse, solar_curves_by_area["residential"])
+                spec["solar_curve"] = [
+                    value * spec["roof_area_m2"] / avg_roof
+                    for value in per_m2
+                ]
+    target_len = max(
+        len(next(iter(demand_curves.values()))),
+        len(next(iter(solar_curves.values()))),
+    )
+    if cell_specs:
+        target_len = max(
+            target_len,
+            len(cell_specs[0]["demand_curve"]),
+            len(cell_specs[0]["solar_curve"]),
+        )
+    outage_severity, outage_solar_factor, outage_grid_support, outage_source = load_outage_profile(
+        config.get("outage_profile_csv"),
+        target_len,
+    )
     return DataBundle(
         demand_curves=demand_curves,
         solar_curves=solar_curves,
+        outage_severity=outage_severity,
+        outage_solar_factor=outage_solar_factor,
+        outage_grid_support=outage_grid_support,
         roof_area_m2=roof,
+        cell_specs=cell_specs,
         sources={
             "demand_csv": config["demand_csv"],
             "metadata_csv": config["metadata_csv"],
             "solar_epw": solar_source,
+            "outage_profile_csv": outage_source,
+            **real_patch_sources,
             "profiles": json.dumps(profile_counts),
             "demand_series_length": str(len(next(iter(demand_curves.values())))),
             "solar_series_length": str(len(next(iter(solar_curves.values())))),
+            "outage_series_length": str(len(outage_severity)),
         },
     )
 
@@ -468,6 +674,8 @@ class LandUseNormSimulation:
         return (row // self.block_size) * self.block_cols + (col // self.block_size)
 
     def _make_landuse_map(self) -> list[int]:
+        if self.data.cell_specs:
+            return [int(spec["landuse"]) for spec in self.data.cell_specs]
         anchors = [
             (0.27, 0.72, 0),
             (0.72, 0.25, 1),
@@ -496,14 +704,21 @@ class LandUseNormSimulation:
 
     def _init_cells(self) -> None:
         self.cells = []
-        critical_fraction = float(self.config.get("critical_fraction", 0.10))
         for idx, landuse in enumerate(self.landuse_map):
             row, col = divmod(idx, self.size)
             norm = self.initial_norm_for_landuse(landuse)
             spec = LAND_USES[landuse]
-            storage_cap = spec["storage_cap"] * float(self.config.get("storage_capacity_multiplier", 1.0)) * self.rng.uniform(0.78, 1.22)
-            center_bias = math.exp(-math.hypot(row - self.size * 0.34, col - self.size * 0.34) / (self.size * 0.18))
-            critical_prob = critical_fraction * (0.55 + 2.8 * center_bias)
+            cell_spec = self.data.cell_specs[idx] if self.data.cell_specs and idx < len(self.data.cell_specs) else None
+            roof_factor = 1.0
+            if cell_spec:
+                avg_roof = sum(float(item["roof_area_m2"]) for item in self.data.cell_specs or [cell_spec]) / max(1, len(self.data.cell_specs or [cell_spec]))
+                roof_factor = float(cell_spec["roof_area_m2"]) / max(1e-6, avg_roof)
+            storage_cap = (
+                spec["storage_cap"]
+                * float(self.config.get("storage_capacity_multiplier", 1.0))
+                * (0.78 + 0.44 * roof_factor)
+                * self.rng.uniform(0.90, 1.10)
+            )
             cell = Cell(
                 landuse=landuse,
                 norm=norm,
@@ -512,20 +727,15 @@ class LandUseNormSimulation:
                 health=self.rng.uniform(0.88, 1.0),
                 storage_cap=storage_cap,
                 storage=storage_cap * self.rng.uniform(0.38, 0.72),
-                critical=self.rng.random() < critical_prob,
+                demand_curve=cell_spec.get("demand_curve") if cell_spec else None,
+                solar_curve=cell_spec.get("solar_curve") if cell_spec else None,
             )
             self.cells.append(cell)
 
     def initial_norm_for_landuse(self, landuse: int) -> int:
         if self.fixed_norm is not None:
             return self.fixed_norm
-        if landuse == 0:
-            options = [0, 2, 7, 2]
-        elif landuse == 1:
-            options = [1, 6, 6, 2]
-        else:
-            options = [1, 5, 6, 3]
-        return self.rng.choice(options)
+        return self.rng.randrange(len(NORMS))
 
     def neighbor_indices(self, idx: int, radius: int) -> list[int]:
         cache_key = (idx, radius)
@@ -558,14 +768,25 @@ class LandUseNormSimulation:
         shock = 1.0
         if int(self.config["shock_start"]) <= step < int(self.config["shock_end"]):
             shock = float(self.config["solar_shock_factor"])
-        return curve[step % len(curve)] * shock * float(self.config.get("solar_generation_multiplier", 1.0))
+        outage_factor = self.data.outage_solar_factor[step % len(self.data.outage_solar_factor)]
+        return curve[step % len(curve)] * shock * outage_factor * float(self.config.get("solar_generation_multiplier", 1.0))
+
+    def cell_demand(self, cell: Cell, step: int) -> float:
+        if cell.demand_curve:
+            return cell.demand_curve[step % len(cell.demand_curve)] * LAND_USES[cell.landuse]["demand_scale"]
+        return self.landuse_demand(cell.landuse, step)
+
+    def cell_solar(self, cell: Cell, hour: int, step: int) -> float:
+        if cell.solar_curve:
+            shock = 1.0
+            if int(self.config["shock_start"]) <= step < int(self.config["shock_end"]):
+                shock = float(self.config["solar_shock_factor"])
+            outage_factor = self.data.outage_solar_factor[step % len(self.data.outage_solar_factor)]
+            return cell.solar_curve[step % len(cell.solar_curve)] * shock * outage_factor * float(self.config.get("solar_generation_multiplier", 1.0))
+        return self.landuse_solar(cell.landuse, hour, step)
 
     def should_share(self, donor: Cell, receiver: Cell, distance: float) -> bool:
         norm = NORMS[donor.norm]["kind"]
-        receiver_good = receiver.reputation >= 0.5
-        receiver_excellent = receiver.reputation >= 0.72
-        need_ratio = receiver.deficit / max(receiver.demand, 1e-6)
-        surplus_ratio = donor.surplus / max(donor.demand, 1e-6)
         block_norm = self.block_norm(donor)
         institutional_bonus = block_norm == donor.norm and self.block_strength[donor.block_id] > 0.35
         threshold_shift = 0.10 if institutional_bonus else 0.0
@@ -574,48 +795,17 @@ class LandUseNormSimulation:
         if norm == "generous":
             return donor.storage > donor.storage_cap * (0.20 - threshold_shift)
         if norm == "selfish":
-            return receiver.critical and surplus_ratio > (1.15 - threshold_shift)
-        if norm == "standing":
-            return receiver_good or (receiver.critical and donor.storage > donor.storage_cap * 0.30)
-        if norm == "stern":
-            return receiver_good and (receiver.critical or donor.storage > donor.storage_cap * 0.38)
-        if norm == "shunning":
-            return receiver_excellent and donor.storage > donor.storage_cap * (0.50 - threshold_shift)
-        if norm == "critical":
-            return receiver.critical and donor.storage > donor.storage_cap * (0.24 - threshold_shift)
-        if norm == "market":
-            benefit = need_ratio * (1.8 if receiver.critical else 1.0)
-            distance_cost = 0.22 * distance / max(1.0, float(self.config.get("share_radius", 1)))
-            return benefit + 0.20 * receiver.reputation > 0.46 + distance_cost - threshold_shift
-        if norm == "local":
-            local_radius = float(self.config.get("local_norm_radius", self.config.get("share_radius", 2)))
-            return distance <= (local_radius + (0.75 if institutional_bonus else 0.0)) and (
-                receiver_good or receiver.critical
-            )
+            return False
         return False
 
     def pool_link_allowed(self, a: Cell, b: Cell, distance: float) -> bool:
         if not bool(self.config.get("enable_shared_storage_pool", False)):
             return False
         norm = NORMS[a.norm]["kind"]
-        b_good = b.reputation >= 0.5
-        b_excellent = b.reputation >= 0.72
-        need_ratio = b.deficit / max(b.demand, 1e-6)
         if norm == "generous":
             return True
         if norm == "selfish":
-            return b.critical
-        if norm in ("standing", "stern"):
-            return b_good or b.critical
-        if norm == "shunning":
-            return b_excellent
-        if norm == "critical":
-            return b.critical
-        if norm == "market":
-            return need_ratio > 0.18 or b.critical
-        if norm == "local":
-            local_radius = float(self.config.get("local_norm_radius", self.config.get("share_radius", 2)))
-            return distance <= local_radius and (b_good or b.critical)
+            return False
         return False
 
     def norm_transfer_fraction(self, donor: Cell, receiver: Cell, distance: float) -> float:
@@ -623,21 +813,7 @@ class LandUseNormSimulation:
         if norm == "generous":
             return 1.00
         if norm == "selfish":
-            return 0.32 if receiver.critical else 0.0
-        if norm == "standing":
-            return 0.72 if receiver.reputation >= 0.5 else 0.45
-        if norm == "stern":
-            return 0.58 if receiver.reputation >= 0.5 else 0.0
-        if norm == "shunning":
-            return 0.46 if receiver.reputation >= 0.72 else 0.0
-        if norm == "critical":
-            return 0.92 if receiver.critical else 0.12
-        if norm == "market":
-            need_ratio = receiver.deficit / max(receiver.demand, 1e-6)
-            return max(0.20, min(0.95, 0.25 + 0.75 * need_ratio))
-        if norm == "local":
-            local_radius = max(1e-6, float(self.config.get("local_norm_radius", self.config.get("share_radius", 2))))
-            return max(0.18, 0.82 * (1.0 - min(1.0, distance / local_radius)))
+            return 0.0
         return 0.0
 
     def sharing_efficiency(self, distance: float) -> float:
@@ -683,7 +859,7 @@ class LandUseNormSimulation:
                 action = self.should_share(donor, receiver, dist)
                 donor.reputation = self.assess(donor, receiver, action)
                 if not action:
-                    donor.payoff -= 0.018 if receiver.critical else 0.006
+                    donor.payoff -= 0.006
                     continue
                 efficiency = self.sharing_efficiency(dist)
                 transfer_cap = donor.surplus * self.norm_transfer_fraction(donor, receiver, dist)
@@ -695,7 +871,7 @@ class LandUseNormSimulation:
                 donor.surplus = max(0.0, donor.storage - donor.storage_cap * 0.44)
                 receiver.deficit = max(0.0, receiver.deficit - received)
                 receiver.served += received
-                donor.payoff += 0.052 * (2.0 if receiver.critical else 1.0) - 0.014 * transfer
+                donor.payoff += 0.052 - 0.014 * transfer
                 receiver.payoff += 0.07 * received / max(receiver.demand, 1e-6)
                 cooperation_successes += 1
 
@@ -717,18 +893,20 @@ class LandUseNormSimulation:
             good = table[2]
         else:
             good = table[3]
-        if receiver.critical and action:
-            good = 1
         return min(1.0, donor.reputation + 0.08) if good else max(0.0, donor.reputation - 0.16)
 
     def energy_step(self, step: int) -> dict[str, float]:
         hour = step % 24
+        outage_severity = self.data.outage_severity[step % len(self.data.outage_severity)]
+        outage_profile_grid = self.data.outage_grid_support[step % len(self.data.outage_grid_support)]
         in_shock = int(self.config["shock_start"]) <= step < int(self.config["shock_end"])
         grid_support = (
             float(self.config["outage_grid_support"])
             if in_shock
             else float(self.config["normal_grid_support"])
         )
+        if outage_severity > 0.0:
+            grid_support = outage_profile_grid
         for cell in self.cells:
             cell.payoff *= 0.45
             if not cell.alive:
@@ -737,8 +915,8 @@ class LandUseNormSimulation:
                 cell.deficit = 0.0
                 cell.surplus = 0.0
                 continue
-            demand = self.landuse_demand(cell.landuse, step)
-            solar = self.landuse_solar(cell.landuse, hour, step)
+            demand = self.cell_demand(cell, step)
+            solar = self.cell_solar(cell, hour, step)
             available = cell.storage + solar + demand * grid_support
             served = min(demand, available)
             cell.demand = demand
@@ -756,7 +934,6 @@ class LandUseNormSimulation:
         ]
         receivers.sort(
             key=lambda idx: (
-                not self.cells[idx].critical,
                 -self.cells[idx].deficit,
                 -self.cells[idx].reputation,
             )
@@ -792,7 +969,7 @@ class LandUseNormSimulation:
                     action = self.should_share(donor, receiver, dist)
                     donor.reputation = self.assess(donor, receiver, action)
                     if not action:
-                        donor.payoff -= 0.018 if receiver.critical else 0.006
+                        donor.payoff -= 0.006
                         continue
                     same_block_institution = (
                         donor.block_id == receiver.block_id
@@ -809,7 +986,7 @@ class LandUseNormSimulation:
                     donor.surplus = max(0.0, donor.storage - donor.storage_cap * 0.44)
                     receiver.deficit = max(0.0, receiver.deficit - received)
                     receiver.served += received
-                    donor.payoff += 0.052 * (2.0 if receiver.critical else 1.0) - 0.014 * transfer
+                    donor.payoff += 0.052 - 0.014 * transfer
                     if same_block_institution:
                         donor.payoff += 0.020
                     receiver.payoff += 0.07 * received / max(receiver.demand, 1e-6)
@@ -818,14 +995,17 @@ class LandUseNormSimulation:
         active_cells = [cell for cell in self.cells if cell.alive]
         total_demand = sum(cell.demand for cell in active_cells)
         total_served = sum(min(cell.served, cell.demand) for cell in active_cells)
-        critical_cells = [cell for cell in active_cells if cell.critical]
-        critical_demand = sum(cell.demand for cell in critical_cells)
-        critical_served = sum(min(cell.served, cell.demand) for cell in critical_cells)
+        resilient_threshold = float(self.config.get("resilient_deficit_threshold", 0.05))
 
         for cell in self.cells:
             if not cell.alive:
+                cell.resilient = False
                 continue
             unmet = cell.deficit / max(cell.demand, 1e-6)
+            cell.cumulative_demand += cell.demand
+            cell.cumulative_deficit += max(0.0, cell.deficit)
+            cumulative_unmet = cell.cumulative_deficit / max(cell.cumulative_demand, 1e-6)
+            cell.resilient = cumulative_unmet <= resilient_threshold
             institution = self.block_norm(cell)
             aligned = institution == cell.norm and institution >= 0
             recovery_rate = float(self.config.get("health_recovery_rate", 0.044))
@@ -836,20 +1016,21 @@ class LandUseNormSimulation:
             cell.payoff += 0.08 * (1.0 - unmet) + 0.035 * cell.reputation
             if aligned:
                 cell.payoff += 0.035 * self.block_strength[cell.block_id]
-            if cell.critical:
-                cell.payoff += 0.05 * (1.0 - unmet)
             if cell.health <= 0.035:
                 cell.alive = False
+                cell.resilient = False
                 cell.reputation = 0.25
 
         return {
             "served_fraction": min(1.0, total_served / max(total_demand, 1e-6)),
-            "critical_service": min(1.0, critical_served / max(critical_demand, 1e-6)),
             "cooperation_rate": cooperation_successes / max(1, cooperation_attempts),
             "cooperation_attempts": cooperation_attempts,
             "cooperation_successes": cooperation_successes,
             "pool_count": pool_count,
             "pool_members": pool_members,
+            "outage_severity": outage_severity,
+            "outage_solar_factor": self.data.outage_solar_factor[step % len(self.data.outage_solar_factor)],
+            "grid_support": grid_support,
         }
 
     def rebuild_norm(self, idx: int, live_neighbors: list[int]) -> int:
@@ -1023,35 +1204,40 @@ class LandUseNormSimulation:
 
     def metrics(self, step: int, stats: dict[str, float]) -> dict[str, Any]:
         alive = [cell for cell in self.cells if cell.alive]
-        critical = [cell for cell in self.cells if cell.critical]
-        critical_alive = [cell for cell in critical if cell.alive and cell.health > 0.08]
+        resilient = [cell for cell in alive if cell.resilient]
         norm_counts = [0] * len(NORMS)
         landuse_counts = [[0] * len(NORMS) for _ in LAND_USES]
         landuse_service = [0.0] * len(LAND_USES)
         landuse_n = [0] * len(LAND_USES)
         alive_stress = [cell.stress_memory for cell in alive]
-        critical_alive_stress = [cell.stress_memory for cell in critical_alive]
+        resilient_stress = [cell.stress_memory for cell in resilient]
+        resilient_demand = sum(cell.demand for cell in resilient)
+        resilient_served = sum(min(cell.served, cell.demand) for cell in resilient)
         for cell in alive:
             norm_counts[cell.norm] += 1
             landuse_counts[cell.landuse][cell.norm] += 1
             landuse_service[cell.landuse] += cell.served / max(cell.demand, 1e-6)
             landuse_n[cell.landuse] += 1
         hierarchy_count, hierarchy_coverage, hierarchy_norms = self.hierarchy_metrics()
+        resilient_fraction = len(resilient) / len(self.cells)
         return {
             "step": step,
             "alive_fraction": len(alive) / len(self.cells),
-            "critical_survival": len(critical_alive) / max(1, len(critical)),
-            "critical_fraction": len(critical) / len(self.cells),
+            "resilient_fraction": resilient_fraction,
+            "resilient_buildings_percent": 100.0 * resilient_fraction,
             "served_fraction": stats["served_fraction"],
-            "critical_service": stats["critical_service"],
+            "resilient_service": min(1.0, resilient_served / max(resilient_demand, 1e-6)),
             "mean_stress_memory": sum(alive_stress) / max(1, len(alive_stress)),
-            "critical_stress_memory": sum(critical_alive_stress) / max(1, len(critical_alive_stress)),
+            "resilient_stress_memory": sum(resilient_stress) / max(1, len(resilient_stress)),
             "max_stress_memory": max(alive_stress) if alive_stress else 0.0,
             "cooperation_rate": stats["cooperation_rate"],
             "cooperation_attempts": stats["cooperation_attempts"],
             "cooperation_successes": stats["cooperation_successes"],
             "pool_count": int(stats.get("pool_count", 0)),
             "pool_members": int(stats.get("pool_members", 0)),
+            "outage_severity": float(stats.get("outage_severity", 0.0)),
+            "outage_solar_factor": float(stats.get("outage_solar_factor", 1.0)),
+            "grid_support": float(stats.get("grid_support", 0.0)),
             "norm_mutations": int(stats.get("norm_mutations", 0)),
             "norm_imitations": int(stats.get("norm_imitations", 0)),
             "building_rebuilds": int(stats.get("building_rebuilds", 0)),
@@ -1216,17 +1402,48 @@ def render_hierarchy_overlay(
                 draw_text_badge(draw, x + 4, y + 4, NORMS[norm]["key"])
 
 
+def draw_state_legend(draw: ImageDraw.ImageDraw, x: int, y: int, metric: dict[str, Any]) -> None:
+    cursor = x
+    for landuse in LAND_USES:
+        draw.rectangle([cursor, y + 3, cursor + 12, y + 15], fill=landuse["color"])
+        draw.text((cursor + 16, y), f"{landuse['key']} {landuse['name']}", fill=(15, 23, 42))
+        cursor += 108
+
+    cursor += 12
+    fixed_key = str(metric.get("fixed_norm_key", "")).upper()
+    norm_items = [norm for norm in NORMS if not fixed_key or norm["key"] == fixed_key]
+    for norm in norm_items:
+        draw.rectangle([cursor, y + 3, cursor + 12, y + 15], fill=norm["color"])
+        draw.text((cursor + 16, y), f"{norm['key']} {norm['name']}", fill=(15, 23, 42))
+        cursor += 110
+
+    for color, label in [
+        ((22, 163, 74), "served"),
+        ((234, 179, 8), "partial"),
+        ((220, 38, 38), "deficit"),
+        ((30, 41, 59), "dead"),
+    ]:
+        draw.rectangle([cursor, y + 3, cursor + 12, y + 15], fill=color)
+        draw.text((cursor + 16, y), label, fill=(15, 23, 42))
+        cursor += 74
+
+    marker_x = cursor + 4
+    draw.rectangle([marker_x, y + 4, marker_x + 10, y + 14], outline=(15, 23, 42))
+    draw.text((marker_x + 16, y), "resilient <=5% deficit", fill=(15, 23, 42))
+
+
 def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: dict[str, Any]) -> Image.Image:
     scale = 8
     margin = 18
     gap = 16
     panel = size * scale
-    footer = 64
+    footer = 92
     width = panel * 3 + gap * 2 + margin * 2
     height = panel + margin * 2 + footer
     image = Image.new("RGB", (width, height), (248, 250, 252))
     draw = ImageDraw.Draw(image)
-    norm_title = "static SELF rule" if metric.get("model_mode") == "static_fixed_norm" else "individual norm + hierarchy"
+    fixed_key = str(metric.get("fixed_norm_key", "SELF")).upper()
+    norm_title = f"static {fixed_key} rule" if metric.get("model_mode") == "static_fixed_norm" else "individual norm + hierarchy"
     titles = ["land-use attribute", norm_title, "service + health"]
     for pidx, title in enumerate(titles):
         x0 = margin + pidx * (panel + gap)
@@ -1254,7 +1471,7 @@ def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: d
                 else:
                     color = blend((220, 38, 38), 0.55 + 0.25 * cell.health)
             draw.rectangle([x, y, x + scale - 1, y + scale - 1], fill=color)
-            if cell.critical and pidx != 0:
+            if cell.resilient and pidx != 0:
                 draw.rectangle(
                     [x + 2, y + 2, x + scale - 3, y + scale - 3],
                     outline=(255, 255, 255),
@@ -1264,14 +1481,22 @@ def render_state(cells: list[Cell], landuse_map: list[int], size: int, metric: d
 
     norm_freq = metric["norm_frequencies"]
     top_norm = max(range(len(norm_freq)), key=lambda idx: norm_freq[idx])
-    footer_text = (
-        f"step={metric['step']:03d} served={metric['served_fraction']:.2f} "
-        f"critical={metric['critical_survival']:.2f} coop={metric['cooperation_rate']:.2f} "
-        f"hier={metric['hierarchy_coverage']:.2f} align={metric['hierarchy_alignment']:.2f} "
-        f"top_norm={NORMS[top_norm]['key']} {norm_freq[top_norm]:.2f} "
-        f"converged={metric.get('converged', False)}"
-    )
-    draw.text((margin, height - footer + 16), footer_text, fill=(15, 23, 42))
+    if metric.get("model_mode") == "static_fixed_norm":
+        footer_text = (
+            f"step={metric['step']:03d} alive={100.0 * metric['alive_fraction']:.1f}% "
+            f"norm={metric.get('fixed_norm_key', NORMS[top_norm]['key'])} "
+            f"converged={metric.get('converged', False)}"
+        )
+    else:
+        footer_text = (
+            f"step={metric['step']:03d} served={metric['served_fraction']:.2f} "
+            f"resilient={metric['resilient_fraction']:.2f} coop={metric['cooperation_rate']:.2f} "
+            f"hier={metric['hierarchy_coverage']:.2f} align={metric['hierarchy_alignment']:.2f} "
+            f"top_norm={NORMS[top_norm]['key']} {norm_freq[top_norm]:.2f} "
+            f"converged={metric.get('converged', False)}"
+        )
+    draw_state_legend(draw, margin, height - footer + 12, metric)
+    draw.text((margin, height - footer + 40), footer_text, fill=(15, 23, 42))
     return image
 
 
@@ -1299,16 +1524,13 @@ def block_summaries(cells: list[Cell], size: int, metric: dict[str, Any]) -> lis
             norm_counts = [0] * len(NORMS)
             landuse_counts = [0] * len(LAND_USES)
             service = 0.0
-            critical_total = 0
-            critical_alive = 0
+            resilient_count = 0
             for cell in alive:
                 norm_counts[cell.norm] += 1
                 landuse_counts[cell.landuse] += 1
                 service += cell.served / max(cell.demand, 1e-6)
-                if cell.critical:
-                    critical_total += 1
-                    if cell.health > 0.08:
-                        critical_alive += 1
+                if cell.resilient:
+                    resilient_count += 1
             hierarchy_norm = block_norms[block_id] if block_id < len(block_norms) else -1
             hierarchy_strength = (
                 block_strength[block_id]
@@ -1338,8 +1560,8 @@ def block_summaries(cells: list[Cell], size: int, metric: dict[str, Any]) -> lis
                     "dominant_landuse": LAND_USES[top_landuse]["key"] if top_landuse >= 0 else "",
                     "alive_fraction": len(alive) / max(1, len(members)),
                     "mean_service": service / max(1, len(alive)),
-                    "critical_survival": critical_alive / max(1, critical_total),
-                    "critical_count": critical_total,
+                    "resilient_fraction": resilient_count / max(1, len(members)),
+                    "resilient_count": resilient_count,
                 }
             )
     return summaries
@@ -1547,22 +1769,40 @@ def write_hierarchy_canopy_png(cells: list[Cell], size: int, metric: dict[str, A
     image.save(path)
 
 
+def normalized_resilience_auc(metrics: list[dict[str, Any]]) -> float:
+    if not metrics:
+        return 0.0
+    if len(metrics) == 1:
+        return max(0.0, min(1.0, float(metrics[0]["alive_fraction"])))
+    area = 0.0
+    for left, right in zip(metrics, metrics[1:]):
+        dt = max(0.0, float(right["step"]) - float(left["step"]))
+        q0 = max(0.0, min(1.0, float(left["alive_fraction"])))
+        q1 = max(0.0, min(1.0, float(right["alive_fraction"])))
+        area += 0.5 * (q0 + q1) * dt
+    duration = max(1.0, float(metrics[-1]["step"]) - float(metrics[0]["step"]))
+    return max(0.0, min(1.0, area / duration))
+
+
 def write_csv(metrics: list[dict[str, Any]], path: Path) -> None:
     with path.open("w", newline="", encoding="utf-8") as f:
         scalar_fields = [
             "step",
             "alive_fraction",
-            "critical_survival",
-            "critical_fraction",
+            "resilient_fraction",
+            "resilient_buildings_percent",
             "served_fraction",
-            "critical_service",
+            "resilient_service",
             "cooperation_rate",
             "cooperation_attempts",
             "cooperation_successes",
             "pool_count",
             "pool_members",
+            "outage_severity",
+            "outage_solar_factor",
+            "grid_support",
             "mean_stress_memory",
-            "critical_stress_memory",
+            "resilient_stress_memory",
             "max_stress_memory",
             "norm_mutations",
             "norm_imitations",
@@ -1637,29 +1877,36 @@ def write_metrics_png(metrics: list[dict[str, Any]], path: Path) -> None:
     image = Image.new("RGB", (1160, 760), (248, 250, 252))
     draw = ImageDraw.Draw(image)
     static_mode = metrics[-1].get("model_mode") == "static_fixed_norm"
-    title = "Static SELF-rule energy ABM metrics" if static_mode else "Land-use conditioned norm hierarchy metrics"
+    title = "Static fixed-rule energy ABM metrics" if static_mode else "Land-use conditioned norm hierarchy metrics"
     draw.text((36, 24), title, fill=(15, 23, 42))
-    resilience_series = [
-        ("alive", "active buildings", (15, 23, 42), [row["alive_fraction"] for row in metrics]),
-        ("served", "load served", (22, 163, 74), [row["served_fraction"] for row in metrics]),
-        ("critical", "critical survival", (220, 38, 38), [row["critical_survival"] for row in metrics]),
-    ]
+    if static_mode:
+        cumulative_resilience = [
+            normalized_resilience_auc(metrics[: idx + 1])
+            for idx in range(len(metrics))
+        ]
+        resilience_series = [
+            ("alive", "alive buildings", (15, 23, 42), [row["alive_fraction"] for row in metrics]),
+            ("R", "normalized resilience AUC", (37, 99, 235), cumulative_resilience),
+        ]
+    else:
+        resilience_series = [
+            ("alive", "active buildings", (15, 23, 42), [row["alive_fraction"] for row in metrics]),
+            ("served", "load served", (22, 163, 74), [row["served_fraction"] for row in metrics]),
+            ("resilient", "buildings <=5% cumulative deficit", (220, 38, 38), [row["resilient_fraction"] for row in metrics]),
+        ]
     if not static_mode:
         resilience_series.extend([
             ("hier", "hierarchy coverage", (147, 51, 234), [row["hierarchy_coverage"] for row in metrics]),
             ("align", "norm hierarchy alignment", (14, 165, 233), [row["hierarchy_alignment"] for row in metrics]),
         ])
-    draw.text((72, 70), "system resilience" if static_mode else "system and hierarchy", fill=(15, 23, 42))
+    draw.text((72, 70), "evaluation metrics" if static_mode else "system and hierarchy", fill=(15, 23, 42))
     draw_series_panel(draw, metrics, 72, 96, 1000, 250, resilience_series)
 
     if static_mode:
-        convergence_series = [
-            ("health", "1 - daily health delta", (37, 99, 235), [max(0.0, 1.0 - row["daily_health_delta"] / 0.05) for row in metrics]),
-            ("storage", "1 - daily storage delta", (14, 165, 233), [max(0.0, 1.0 - row["daily_storage_delta"] / 0.05) for row in metrics]),
-            ("stable", "stable step ratio", (147, 51, 234), [min(1.0, row["stable_steps"] / max(1, int(metrics[-1].get("stable_steps", 1)))) for row in metrics]),
-        ]
-        draw.text((72, 396), "daily-cycle convergence diagnostics", fill=(15, 23, 42))
-        draw_series_panel(draw, metrics, 72, 422, 1000, 220, convergence_series)
+        draw.text((72, 396), "Final evaluation", fill=(15, 23, 42))
+        draw.text((72, 428), f"Alive buildings: {100.0 * metrics[-1]['alive_fraction']:.1f}%", fill=(15, 23, 42))
+        draw.text((72, 456), f"Resilience normalized to [0,1]: {normalized_resilience_auc(metrics):.3f}", fill=(15, 23, 42))
+        draw.text((72, 484), "R is the area under Q(t), where Q(t) is alive-building fraction.", fill=(71, 85, 105))
     else:
         norm_series = [
             (
@@ -1677,10 +1924,11 @@ def write_metrics_png(metrics: list[dict[str, Any]], path: Path) -> None:
 
 def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
     static_mode = summary.get("model_mode") == "static_fixed_norm"
-    page_title = "Static SELF-Rule Energy ABM" if static_mode else "Land-Use Conditioned Norm Hierarchy"
+    fixed_key = summary.get("fixed_norm_key") or "fixed"
+    page_title = f"Static {fixed_key}-Rule Energy ABM" if static_mode else "Land-Use Conditioned Norm Hierarchy"
     intro = (
-        "All buildings use the fixed SELF rule. Norm mutation, imitation, hierarchy, and rebuild are disabled. "
-        "The run stops when the daily state approximately repeats, or when the maximum step count is reached."
+        "All buildings use one fixed sharing rule. Norm mutation, imitation, hierarchy, and rebuild are disabled. "
+        "Evaluation reports alive buildings (%) and normalized resilience AUC."
         if static_mode
         else (
             "Land use is a fixed cell attribute that shapes demand and generation. "
@@ -1705,6 +1953,19 @@ def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
         if static_mode
         else ""
     )
+    if static_mode:
+        final_summary = (
+            f"alive buildings={summary.get('alive_buildings_percent', 0.0):.1f}%, "
+            f"resilience={summary.get('resilience_normalized', 0.0):.3f}{convergence_summary}."
+        )
+    else:
+        final_summary = (
+            f"served={summary['served_fraction']:.2f}, "
+            f"resilient={summary['resilient_fraction']:.2f}, "
+            f"hierarchy coverage={summary['hierarchy_coverage']:.2f}, "
+            f"alignment={summary['hierarchy_alignment']:.2f}, "
+            f"top norm={summary['top_norm']}."
+        )
     norm_rows = "\n".join(
         f"<tr><td>{norm['key']}</td><td>{norm['name']}</td><td><span style='display:inline-block;width:14px;height:14px;background:rgb{norm['color']}'></span></td></tr>"
         for norm in NORMS
@@ -1737,11 +1998,7 @@ def write_html(out_dir: Path, summary: dict[str, Any]) -> None:
     <p>{intro}</p>
     <div class="panel">
       <strong>Final summary:</strong>
-      served={summary['served_fraction']:.2f},
-      critical survival={summary['critical_survival']:.2f},
-      hierarchy coverage={summary['hierarchy_coverage']:.2f},
-      alignment={summary['hierarchy_alignment']:.2f},
-      top norm={summary['top_norm']}{convergence_summary}.
+      {final_summary}
     </div>
     <div class="panel">
       <h2>Evolution</h2>
@@ -1813,6 +2070,8 @@ def save_result(result: SimulationResult, out_dir: Path) -> None:
     )
     write_csv(result.metrics, out_dir / "landuse_norm_metrics.csv")
     summary = result.metrics[-1].copy()
+    summary["alive_buildings_percent"] = 100.0 * summary["alive_fraction"]
+    summary["resilience_normalized"] = normalized_resilience_auc(result.metrics)
     top_norm = max(range(len(NORMS)), key=lambda idx: summary["norm_frequencies"][idx])
     summary["top_norm"] = f"{NORMS[top_norm]['key']} / {NORMS[top_norm]['name']}"
     write_html(out_dir, summary)

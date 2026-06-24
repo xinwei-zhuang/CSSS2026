@@ -18,24 +18,26 @@ from landuse_norm_model import NORMS, LandUseNormSimulation, load_data, save_res
 SUMMARY_FIELDS = [
     "norm",
     "name",
-    "alive_fraction",
-    "critical_survival",
-    "annual_mean_served_fraction",
-    "annual_mean_critical_service",
-    "final_served_fraction",
-    "final_critical_service",
-    "mean_stress_memory",
-    "critical_stress_memory",
-    "max_stress_memory",
-    "annual_cooperation_attempts",
-    "annual_cooperation_successes",
-    "final_cooperation_attempts",
-    "final_cooperation_successes",
-    "mean_pool_count",
-    "mean_pool_members",
-    "converged",
-    "last_step",
+    "alive_buildings_percent",
+    "resilience_normalized",
 ]
+
+
+def normalized_resilience_auc(metrics: list[dict[str, Any]]) -> float:
+    if not metrics:
+        return 0.0
+    if len(metrics) == 1:
+        return max(0.0, min(1.0, float(metrics[0]["alive_fraction"])))
+
+    area = 0.0
+    for left, right in zip(metrics, metrics[1:]):
+        dt = max(0.0, float(right["step"]) - float(left["step"]))
+        q0 = max(0.0, min(1.0, float(left["alive_fraction"])))
+        q1 = max(0.0, min(1.0, float(right["alive_fraction"])))
+        area += 0.5 * (q0 + q1) * dt
+
+    duration = max(1.0, float(metrics[-1]["step"]) - float(metrics[0]["step"]))
+    return max(0.0, min(1.0, area / duration))
 
 
 def run_one(base_config: dict[str, Any], norm_key: str, out_root: Path) -> dict[str, Any]:
@@ -51,79 +53,57 @@ def run_one(base_config: dict[str, Any], norm_key: str, out_root: Path) -> dict[
     save_result(result, Path(config["out_dir"]))
 
     final = result.metrics[-1]
-    tail = result.metrics[-min(168, len(result.metrics)) :]
-    annual_mean_served = sum(row["served_fraction"] for row in result.metrics) / max(1, len(result.metrics))
-    annual_mean_critical = sum(row["critical_service"] for row in result.metrics) / max(1, len(result.metrics))
-    annual_attempts = sum(row["cooperation_attempts"] for row in result.metrics)
-    annual_successes = sum(row["cooperation_successes"] for row in result.metrics)
     norm = NORMS[[item["key"] for item in NORMS].index(norm_key)]
     return {
         "norm": norm_key,
         "name": norm["name"],
-        "alive_fraction": final["alive_fraction"],
-        "critical_survival": final["critical_survival"],
-        "annual_mean_served_fraction": annual_mean_served,
-        "annual_mean_critical_service": annual_mean_critical,
-        "final_served_fraction": final["served_fraction"],
-        "final_critical_service": final["critical_service"],
-        "mean_stress_memory": final.get("mean_stress_memory", 0.0),
-        "critical_stress_memory": final.get("critical_stress_memory", 0.0),
-        "max_stress_memory": final.get("max_stress_memory", 0.0),
-        "annual_cooperation_attempts": annual_attempts,
-        "annual_cooperation_successes": annual_successes,
-        "final_cooperation_attempts": final["cooperation_attempts"],
-        "final_cooperation_successes": final["cooperation_successes"],
-        "mean_pool_count": sum(row.get("pool_count", 0) for row in tail) / max(1, len(tail)),
-        "mean_pool_members": sum(row.get("pool_members", 0) for row in tail) / max(1, len(tail)),
-        "converged": final["converged"],
-        "last_step": final["step"],
+        "alive_buildings_percent": 100.0 * final["alive_fraction"],
+        "resilience_normalized": normalized_resilience_auc(result.metrics),
     }
 
 
 def write_summary_png(rows: list[dict[str, Any]], path: Path) -> None:
-    width, height = 1320, 760
+    width, height = 980, 620
     image = Image.new("RGB", (width, height), (248, 250, 252))
     draw = ImageDraw.Draw(image)
-    draw.text((36, 26), "Static shared-storage ABM: 8 fixed norms", fill=(15, 23, 42))
-    draw.text((36, 52), "No external grid, annual load/solar series, local shared storage, no evolution/rebuild.", fill=(71, 85, 105))
+    draw.text((36, 26), "Static shared-storage ABM: fixed norm comparison", fill=(15, 23, 42))
+    draw.text((36, 52), "Evaluation metrics: alive buildings (%) and normalized resilience AUC.", fill=(71, 85, 105))
 
     chart_x, chart_y = 54, 104
-    chart_w, chart_h = 600, 360
+    chart_w, chart_h = 520, 340
     draw.rectangle([chart_x, chart_y, chart_x + chart_w, chart_y + chart_h], fill=(255, 255, 255), outline=(203, 213, 225))
     for tick in range(6):
         y = chart_y + chart_h - round(chart_h * tick / 5)
         draw.line([chart_x, y, chart_x + chart_w, y], fill=(226, 232, 240))
-        draw.text((chart_x - 34, y - 6), f"{tick / 5:.1f}", fill=(71, 85, 105))
+        draw.text((chart_x - 40, y - 6), f"{tick / 5:.1f}", fill=(71, 85, 105))
 
     bar_group = chart_w / len(rows)
     for i, row in enumerate(rows):
-        x = chart_x + i * bar_group + 18
-        bw = max(14, int(bar_group * 0.22))
+        x = chart_x + i * bar_group + 44
+        bw = max(28, int(bar_group * 0.20))
         values = [
-            ("alive_fraction", (15, 23, 42)),
-            ("critical_survival", (220, 38, 38)),
-            ("annual_mean_served_fraction", (22, 163, 74)),
+            ("alive_buildings_percent", (15, 23, 42), 0.01),
+            ("resilience_normalized", (37, 99, 235), 1.0),
         ]
-        for j, (key, color) in enumerate(values):
-            value = max(0.0, min(1.0, float(row[key])))
+        for j, (key, color, scale) in enumerate(values):
+            value = max(0.0, min(1.0, float(row[key]) * scale))
             h = round(chart_h * value)
-            bx = int(x + j * (bw + 4))
+            bx = int(x + j * (bw + 10))
             draw.rectangle([bx, chart_y + chart_h - h, bx + bw, chart_y + chart_h], fill=color)
-        draw.text((int(x), chart_y + chart_h + 10), row["norm"], fill=(15, 23, 42))
+        draw.text((int(x), chart_y + chart_h + 10), row["name"], fill=(15, 23, 42))
 
     legend_x, legend_y = chart_x + 18, chart_y + chart_h + 42
     for label, color in [
-        ("alive buildings", (15, 23, 42)),
-        ("critical survival", (220, 38, 38)),
-        ("served load", (22, 163, 74)),
+        ("alive buildings (%) / 100", (15, 23, 42)),
+        ("resilience AUC", (37, 99, 235)),
     ]:
         draw.rectangle([legend_x, legend_y + 4, legend_x + 15, legend_y + 16], fill=color)
         draw.text((legend_x + 22, legend_y), label, fill=(71, 85, 105))
-        legend_x += 170
+        legend_x += 250
 
-    table_x, table_y = 704, 104
-    headers = ["norm", "alive", "critical", "stress", "pool", "success"]
-    col_w = [70, 82, 82, 82, 82, 94]
+    table_x, table_y = 632, 104
+    headers = ["norm", "alive %", "resilience"]
+    col_w = [88, 96, 110]
     y = table_y
     x = table_x
     for header, w in zip(headers, col_w):
@@ -132,12 +112,9 @@ def write_summary_png(rows: list[dict[str, Any]], path: Path) -> None:
     y += 26
     for row in rows:
         vals = [
-            row["norm"],
-            f"{row['alive_fraction']:.3f}",
-            f"{row['critical_survival']:.3f}",
-            f"{row['mean_stress_memory']:.3f}",
-            f"{row['mean_pool_members']:.1f}",
-            str(int(row["annual_cooperation_successes"])),
+            row["name"],
+            f"{row['alive_buildings_percent']:.1f}",
+            f"{row['resilience_normalized']:.3f}",
         ]
         x = table_x
         for val, w in zip(vals, col_w):
@@ -145,15 +122,15 @@ def write_summary_png(rows: list[dict[str, Any]], path: Path) -> None:
             x += w
         y += 24
 
-    draw.text((36, height - 44), "Resilience is reported as critical-load survival plus service and stress-memory diagnostics.", fill=(71, 85, 105))
+    draw.text((36, height - 44), "Resilience = area under Q(t) using alive-building fraction as Q(t), normalized by full-duration baseline.", fill=(71, 85, 105))
     image.save(path)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run static fixed-norm ABM baselines for the eight rule types.")
+    parser = argparse.ArgumentParser(description="Run static fixed-norm ABM baselines for selfish and generous rules.")
     parser.add_argument("--config", default="configs/static-shared-pool-annual-no-grid.json")
     parser.add_argument("--out-dir", default="results/static_shared_pool_annual_sweep")
-    parser.add_argument("--norms", default=",".join(norm["key"] for norm in NORMS))
+    parser.add_argument("--norms", default="SELF,GEN")
     args = parser.parse_args()
 
     config_path = Path(args.config)
