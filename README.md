@@ -14,6 +14,64 @@ offer surplus when they have it. The only building functions are:
 PV, batteries, floors, and cables are purchasable assets, not extra building
 types.
 
+## Agent Attributes
+
+Each agent is one building cell. The important attributes are:
+
+| Attribute | Meaning | Current setting |
+| --- | --- | --- |
+| `function` | Building use type | `residential` or `commercial` only |
+| `money` | Cash available for investment and agreements | New residential startups receive about `$10,000` with `$1,500` spread |
+| `norm` | Sharing behavior | Fixed generous-only rule: when a building has surplus, it can offer energy to a requester |
+| `property_value` | Land/building value factor | Based on local slope; flatter cells have higher value |
+| `solar_factor` | Local solar potential modifier | West-side fog lowers potential; east-side sun and south-facing terrain increase it |
+| `pv_kw` | Owned PV capacity | Purchased by the building as a capital asset |
+| `battery_kwh` | Owned battery capacity | Purchased by the building as a capital asset |
+| `floors` | Built floor intensity | Purchased upgrade; steeper land is more expensive to intensify |
+| `cables` | Paid adjacent transmission agreements | Each cable is one paid agreement with a neighboring building |
+| `service_ratio` | Lifetime served energy / lifetime demand | Affects income and commercial upgrade readiness |
+
+The current property-value scaling factors are intentionally simple:
+
+| Building function | Property-value income scaling |
+| --- | ---: |
+| residential | `0.45` |
+| commercial | `1.25` |
+
+Commercial buildings are therefore more sensitive to property value than
+residential buildings, but commercial use is not pre-zoned.
+
+## Initial Settings And Assumptions
+
+The experiment begins with an empty SF terrain grid:
+
+| Setting | Current value |
+| --- | --- |
+| Grid | `28 x 28` over a San Francisco bounding box |
+| Initial buildings | none; the first frame is empty terrain |
+| Buildable cells | determined from the SF terrain mask |
+| New entry | about one residential startup per day |
+| Startup site choice | `0.55` solar opportunity + `0.45` property value + small noise |
+| Solar generation potential | NASA POWER 2025 hourly GHI and temperature at San Francisco |
+| Local solar modifier | west-to-east fog gradient plus south-facing aspect adjustment |
+| Property value | based on slope, not elevation |
+| Property-value neighborhood effect | property value can be priced from surrounding values |
+| Death/service feedback | if nearby buildings die or lose service, local property value can fall |
+| Building functions | residential first; commercial only by upgrade |
+| Commercial target | capped near `1 commercial : 9 residential` |
+
+The current asset and transmission costs are:
+
+| Asset / action | Cost |
+| --- | ---: |
+| PV | `$2,410 / kW` |
+| Battery | `$4,660 / 10 kWh` |
+| Cable / adjacent agreement | `$650` |
+| Floor upgrade | `$6,000` |
+| Commercial upgrade | `$3,600` |
+| Transmission efficiency | `0.965` per edge |
+| Transit tax | `$0.012 / kWh` per transit node |
+
 ## Why Block Scale Can Appear
 
 Block scale can appear because energy cannot move arbitrarily across the city.
