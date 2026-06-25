@@ -1,114 +1,141 @@
-# Static Building-Energy ABM Baseline
+# SF Terrain Energy Growth ABM
 
-This repository contains a static agent-based model for comparing two
-building-level energy-sharing norms in a neighborhood with load, rooftop solar,
-storage, and local shared storage.
+This repository contains a minimal building-level agent-based model for asking
+whether block-scale coordination can emerge from local energy exchange, without
+predefining blocks, hubs, districts, or a grid hierarchy.
 
-The current baseline is intentionally simple:
+The current SF experiment starts from an empty terrain grid. Buildings appear as
+residential startups, choose sites, buy assets, request energy when short, and
+offer surplus when they have it. The only building functions are:
 
-- agent = building
-- land use = fixed cell attribute
-- norm = fixed sharing rule
-- no external grid
-- no rule evolution
-- no hierarchy formation
-- no rebuilding
+- residential
+- commercial
 
-## Initial Setting
+PV, batteries, floors, and cables are purchasable assets, not extra building
+types.
 
-The main configuration is:
+## Why Block Scale Can Appear
+
+Block scale can appear because energy cannot move arbitrarily across the city.
+A building in need broadcasts a request. A donor can make an offer if it has
+surplus. If requester and donor are not direct neighbors, the transfer must pass
+through adjacent buildings. Those intermediate buildings can collect transit tax
+or form paid agreements.
+
+That creates a local network externality:
+
+- one cable helps one pair of neighbors;
+- several repeated local agreements make a linked building cluster;
+- linked clusters become useful corridors for future exchanges;
+- corridors with more traffic accumulate more value;
+- once several local clusters connect, a higher-level cluster network can be
+  read from the agreement graph.
+
+So the block is not an input. It is a post-run pattern in the paid agreement
+graph. In the hierarchy visualization:
+
+- L1 is individual buildings only.
+- L2 is linked building clusters. A building with no agreement link is not an L2
+  cluster member.
+- L3 is a network among L2 clusters, created by paid agreement links crossing
+  cluster boundaries.
+
+## Terrain, Solar, And Property Value
+
+The SF grid uses terrain and climate as two explicit assumptions:
+
+- height/elevation is shown as context only;
+- property value is based on slope, not elevation;
+- flatter land has higher property value because it is easier to build on;
+- the property value can also be locally priced from surrounding values;
+- if nearby buildings die or lose service, local property value can fall;
+- solar potential is based on hourly 2025 climate plus a west-to-east SF fog
+  gradient.
+
+The model intentionally uses one property-value factor rather than multiple
+pre-engineered land-use scores.
+
+## Energy Exchange Rule
+
+There is no distance-search parameter in this version.
+
+Energy exchange follows local transmission logic:
+
+1. A building in need of energy broadcasts a request.
+2. Buildings with surplus can make offers.
+3. Direct neighbors can exchange through one adjacent agreement.
+4. Non-neighbor exchange must pass through neighboring buildings.
+5. Transit buildings can collect a fee or form an agreement.
+6. Repeated paid adjacent agreements are read afterward as emergent clusters.
+
+This keeps the decision rule local while allowing larger-scale structure to
+emerge from repeated local dependence.
+
+## Commercial Conversion
+
+All buildings start as residential. A residential building may upgrade to
+commercial only when money, service, and property value make the commercial
+payback plausible. Commercial growth is capped near a 1:9 commercial to
+residential ratio so that commercial cells are present but not pre-zoned.
+
+Commercial and residential buildings use different income scaling:
+
+- residential has a smaller property-value scaling factor;
+- commercial has a larger property-value scaling factor.
+
+## Key Outputs
+
+Main shareable result:
 
 ```text
-configs/static-shared-pool-annual-no-grid.json
+outputs/sf_terrain_energy_growth/sf_energy_growth_all_results_standalone.html
 ```
 
-Important default settings:
-
-| Parameter | Value | Meaning |
-| --- | ---: | --- |
-| `grid_size` | 36 | 36 x 36 building cells |
-| `steps` | 8761 | one full hourly annual profile |
-| `share_radius` | 10 | maximum sharing search distance in cells |
-| `enable_shared_storage_pool` | true | nearby surplus buildings can form a local pool |
-| `normal_grid_support` | 0.0 | no external grid in normal periods |
-| `outage_grid_support` | 0.0 | no external grid in no-solar stress periods |
-| `resilient_deficit_threshold` | 0.05 | building is marked resilient when cumulative unmet demand is <= 5% |
-| `storage_capacity_multiplier` | 24.0 | storage capacity scale |
-| `solar_generation_multiplier` | 4.0 | solar generation scale |
-
-## Fixed Norms
-
-The sweep runs two fixed norms:
-
-| Key | Rule | Sharing logic |
-| --- | --- | --- |
-| `SELF` | selfish | does not share |
-| `GEN` | generous | shares whenever possible |
-
-In this static baseline, a building does not change its norm. Each run assigns
-all buildings the same fixed norm so the two rules can be compared directly.
-
-## Evaluation Metrics
-
-Only two evaluation metrics are reported in the sweep summary:
-
-| Metric | Meaning |
-| --- | --- |
-| `alive_buildings_percent` | final alive buildings divided by all buildings, reported as a percent |
-| `resilience_normalized` | area under Q(t), where Q(t) is alive-building fraction, normalized to [0,1] |
-
-The normalized resilience metric follows:
+Hierarchy diagram:
 
 ```text
-R = integral(Q(t) dt) / integral(Q0 dt)
+outputs/sf_terrain_energy_growth/sf_energy_growth_hierarchy_canopy.png
 ```
 
-Here `Q0 = 1`, so a run that keeps all buildings alive for the full simulated
-period has `R = 1`.
-
-## Data
-
-Demand uses the cleaned annual building energy profiles:
+Assumption timeline:
 
 ```text
-../data/energy_profiles_clean/energy_profiles_hourly_used.csv
-../data/energy_profiles_clean/building_energy_metadata.csv
+outputs/sf_terrain_energy_growth/sf_assumptions_terrain_climate.html
 ```
 
-Solar uses the San Francisco EPW file configured in the JSON file. The simplified
-solar model is:
+Other output files:
 
 ```text
-building roof area * hourly solar radiation * PV efficiency * usable roof fraction
+outputs/sf_terrain_energy_growth/sf_energy_growth_summary.json
+outputs/sf_terrain_energy_growth/sf_energy_growth_metrics.csv
+outputs/sf_terrain_energy_growth/sf_energy_growth_cells.csv
 ```
 
 ## Run
 
-Run the two-rule static baseline:
+Run the SF terrain energy growth experiment:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\run_static_norm_sweep.py --config .\configs\static-shared-pool-annual-no-grid.json --out-dir .\results\static_shared_pool_annual_sweep
+.\.venv\Scripts\python.exe .\scripts\run_sf_terrain_energy_growth.py --out-dir .\outputs\sf_terrain_energy_growth
 ```
 
-Run one config directly:
+Generate the terrain/climate assumptions timeline:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\run_landuse_norm_model.py --config .\configs\static-shared-pool-annual-no-grid.json
+.\.venv\Scripts\python.exe .\scripts\generate_sf_assumptions_timeline.py --day-of-year 209 --out-dir .\outputs\sf_terrain_energy_growth
 ```
 
-## Outputs
+## Data
 
-Latest sweep results are written to:
+When available, demand profiles are sampled from:
 
 ```text
-results/static_shared_pool_annual_sweep/
+../data/energy_profiles_clean/energy_profiles_hourly_used.csv
 ```
 
-Key files:
+If the large profile file is missing, the script falls back to small synthetic
+residential and commercial daily load shapes so the experiment remains runnable.
 
-```text
-static_shared_pool_annual_summary.csv
-static_shared_pool_annual_summary.json
-static_shared_pool_annual_summary.png
-combined_results.html
-```
+Climate data is cached from NASA POWER 2025 hourly GHI and temperature for San
+Francisco. Elevation defaults to a synthetic SF hills fallback unless live
+elevation fetching is explicitly enabled.
