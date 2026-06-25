@@ -1314,15 +1314,22 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
         draw.rectangle([lx - tw / 2, ly - 12, lx + tw / 2, ly + 8], fill=(248, 250, 252), outline=color)
         draw.text((lx - tw / 2 + 6, ly - 9), label, fill=(15, 23, 42))
 
-    # L3: second-order network, shown separately so it is not confused with transmission.
-    panel_x, panel_y = 930, 124
-    draw.rounded_rectangle([panel_x, panel_y, panel_x + 330, panel_y + 250], radius=8, fill=(255, 255, 255), outline=(203, 213, 225))
-    draw.text((panel_x + 18, panel_y + 18), "L3 abstract meta-network", fill=(15, 23, 42))
-    draw.text((panel_x + 18, panel_y + 42), "nodes are L2 clusters, not buildings", fill=(71, 85, 105))
-    meta_nodes = top_l2[: min(12, len(top_l2))]
+    # L3: second-order network, shown as its own layer panel so it is not confused with transmission.
+    panel_x, panel_y = 884, 104
+    panel_w, panel_h = 420, 392
+    draw.rounded_rectangle(
+        [panel_x, panel_y, panel_x + panel_w, panel_y + panel_h],
+        radius=8,
+        fill=(255, 255, 255),
+        outline=(203, 213, 225),
+    )
+    draw.text((panel_x + 18, panel_y + 18), "Layer 3: network of L2 clusters", fill=(15, 23, 42))
+    draw.text((panel_x + 18, panel_y + 44), "node = one L2 linked cluster", fill=(71, 85, 105))
+    draw.text((panel_x + 18, panel_y + 66), "edge = paid agreement crossing two clusters", fill=(71, 85, 105))
+    meta_nodes = top_l2[: min(18, len(top_l2))]
     meta_positions = []
-    center_x, center_y = panel_x + 166, panel_y + 142
-    radius_x, radius_y = 112, 72
+    center_x, center_y = panel_x + 210, panel_y + 220
+    radius_x, radius_y = 154, 104
     for idx, _network in enumerate(meta_nodes):
         angle = -math.pi / 2 + 2 * math.pi * idx / max(1, len(meta_nodes))
         meta_positions.append((center_x + radius_x * math.cos(angle), center_y + radius_y * math.sin(angle)))
@@ -1332,15 +1339,20 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
             continue
         x0, y0 = meta_positions[left_idx]
         x1, y1 = meta_positions[right_idx]
-        draw.line([x0, y0, x1, y1], fill=(148, 163, 184), width=1)
+        draw.line([x0, y0, x1, y1], fill=(148, 163, 184), width=2)
         visible_edge_count += 1
     for idx, network in enumerate(meta_nodes):
         x, y = meta_positions[idx]
-        r = 8 + int(10 * math.sqrt(len(network) / max(1, largest_l2)))
+        r = 9 + int(12 * math.sqrt(len(network) / max(1, largest_l2)))
         color = level2_palette[idx % len(level2_palette)]
         draw.ellipse([x - r, y - r, x + r, y + r], fill=blend(color, 0.28), outline=level3_color, width=2)
         draw.text((x - 8, y - 5), str(idx + 1), fill=(15, 23, 42))
-    draw.text((panel_x + 18, panel_y + 218), f"showing {len(meta_nodes)} of {len(level2_networks)} L2 clusters; {visible_edge_count} visible links", fill=(71, 85, 105))
+    draw.text(
+        (panel_x + 18, panel_y + panel_h - 44),
+        f"showing {len(meta_nodes)} of {len(level2_networks)} L2 clusters; {visible_edge_count} visible links",
+        fill=(71, 85, 105),
+    )
+    draw.text((panel_x + 18, panel_y + panel_h - 22), "This panel is L3; it is not another building layer.", fill=(190, 18, 60))
 
     lx, ly = 42, height - 260
     draw.text((lx, ly), "Layer definition", fill=(15, 23, 42))
