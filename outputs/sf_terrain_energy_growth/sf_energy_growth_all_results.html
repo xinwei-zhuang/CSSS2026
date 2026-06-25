@@ -260,6 +260,42 @@
       line-height: 1.5;
     }
 
+    .agreement-diagnostic {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 0.72fr);
+      gap: 14px;
+      margin-top: 14px;
+      align-items: start;
+    }
+
+    .agreement-diagnostic canvas {
+      background: #f8fafc;
+    }
+
+    #agreementHoverMap {
+      cursor: crosshair;
+    }
+
+    #agreementHoverReadout {
+      min-height: 72px;
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .plot-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
     .inline-swatch {
       width: 13px;
       height: 13px;
@@ -351,7 +387,8 @@
       main { padding: 14px; }
       .hero,
       .grid-2,
-      .grid-3 { grid-template-columns: 1fr; }
+      .grid-3,
+      .agreement-diagnostic { grid-template-columns: 1fr; }
       .timeline-row { grid-template-columns: 1fr; }
       .note { white-space: normal; }
     }
@@ -471,6 +508,22 @@
           <span class="inline-line"></span><strong>black line segments</strong> are paid adjacent transmission agreements between neighboring buildings.
         </p>
         <img src="sf_energy_growth_agreement_components.png" alt="agreement components map">
+        <div class="agreement-diagnostic">
+          <div>
+            <h3>Hover Diagnostic Map</h3>
+            <canvas id="agreementHoverMap" width="760" height="760"></canvas>
+          </div>
+          <div>
+            <h3>Component Demand / Generation / Battery</h3>
+            <div class="plot-legend">
+              <span class="legend-item"><span class="swatch" style="background:#dc2626"></span>demand</span>
+              <span class="legend-item"><span class="swatch" style="background:#eab308"></span>PV generation</span>
+              <span class="legend-item"><span class="swatch" style="background:#2563eb"></span>battery SOC</span>
+            </div>
+            <canvas id="agreementHoverPlot" width="620" height="360"></canvas>
+            <p id="agreementHoverReadout">Hover a colored agreement component to inspect whether it has surplus to offer to other neighbors.</p>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -563,11 +616,13 @@
 
   <script src="timeline_data.js"></script>
   <script src="sf_assumptions_timeline_data.js"></script>
+  <script src="agreement_component_hover_data.js"></script>
   <script>
     const timeline = window.SF_TIMELINE;
     const metrics = timeline.metrics;
     const frames = timeline.frames;
     const assumptions = window.SF_ASSUMPTIONS;
+    const agreementDiagnostics = window.SF_AGREEMENT_COMPONENTS;
     const cells = assumptions.cells;
     const landCells = cells.filter((cell) => cell.land);
     const gridSize = assumptions.grid_size;
@@ -898,16 +953,176 @@
       drawSolar(hourIndex);
     }
 
+    const agreementComponentsById = new Map((agreementDiagnostics?.components || []).map((component) => [component.id, component]));
+    const agreementCellByKey = new Map((agreementDiagnostics?.cells || []).map((cell) => [`${cell.row},${cell.col}`, cell]));
+    let selectedAgreementComponent = agreementDiagnostics?.components?.[0]?.id || 0;
+
+    function setupPlotCanvas(canvas, fallbackHeight = 320) {
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(320, Math.round(rect.width));
+      const height = Math.max(240, Math.round(rect.height || fallbackHeight));
+      if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { ctx, width, height };
+    }
+
+    function drawAgreementHoverMap(componentId = selectedAgreementComponent) {
+      const canvas = document.getElementById("agreementHoverMap");
+      if (!canvas || !agreementDiagnostics) return;
+      const { ctx, size } = setupSquareCanvas(canvas);
+      const pad = 22;
+      const cellSize = (size - pad * 2) / agreementDiagnostics.grid_size;
+      ctx.clearRect(0, 0, size, size);
+      ctx.fillStyle = "#eef2f7";
+      ctx.fillRect(0, 0, size, size);
+      for (const cell of agreementDiagnostics.cells) {
+        const x = pad + cell.col * cellSize;
+        const y = pad + cell.row * cellSize;
+        if (!cell.land) {
+          ctx.fillStyle = "#dbe7ed";
+        } else if (!cell.occupied) {
+          ctx.fillStyle = "#eef2f7";
+        } else if (cell.component > 0) {
+          const component = agreementComponentsById.get(cell.component);
+          ctx.fillStyle = component?.color || "#94a3b8";
+        } else {
+          ctx.fillStyle = "#d7dee8";
+        }
+        ctx.globalAlpha = cell.component === componentId || cell.component === 0 ? 1 : 0.45;
+        ctx.fillRect(x, y, cellSize - 0.8, cellSize - 0.8);
+        ctx.globalAlpha = 1;
+      }
+      ctx.strokeStyle = "rgba(23, 32, 51, 0.72)";
+      ctx.lineWidth = Math.max(1, cellSize * 0.075);
+      for (const edge of agreementDiagnostics.edges) {
+        const [ar, ac] = edge.a;
+        const [br, bc] = edge.b;
+        const ca = agreementCellByKey.get(`${ar},${ac}`)?.component || 0;
+        const cb = agreementCellByKey.get(`${br},${bc}`)?.component || 0;
+        ctx.globalAlpha = ca === componentId && cb === componentId ? 0.95 : 0.28;
+        ctx.beginPath();
+        ctx.moveTo(pad + (ac + 0.5) * cellSize, pad + (ar + 0.5) * cellSize);
+        ctx.lineTo(pad + (bc + 0.5) * cellSize, pad + (br + 0.5) * cellSize);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      const component = agreementComponentsById.get(componentId);
+      if (component) {
+        ctx.fillStyle = "#172033";
+        ctx.font = "13px Inter, system-ui, sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
+        ctx.fillText(`component ${component.id}: ${component.size} buildings`, pad, size - 8);
+      }
+    }
+
+    function drawAgreementHoverPlot(componentId = selectedAgreementComponent) {
+      const canvas = document.getElementById("agreementHoverPlot");
+      const readout = document.getElementById("agreementHoverReadout");
+      if (!canvas || !readout || !agreementDiagnostics) return;
+      const component = agreementComponentsById.get(componentId);
+      const { ctx, width, height } = setupPlotCanvas(canvas, 320);
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      if (!component) {
+        readout.textContent = "Hover a colored agreement component to inspect whether it has surplus to offer to other neighbors.";
+        return;
+      }
+      const pad = { left: 48, right: 18, top: 24, bottom: 36 };
+      const plotW = width - pad.left - pad.right;
+      const plotH = height - pad.top - pad.bottom;
+      const series = component.series || [];
+      const maxY = Math.max(1, ...series.flatMap((point) => [point.demand, point.generation, point.battery]));
+
+      ctx.strokeStyle = "#d7dee8";
+      ctx.strokeRect(pad.left, pad.top, plotW, plotH);
+      ctx.font = "12px Inter, system-ui, sans-serif";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#667085";
+      for (let i = 0; i <= 4; i++) {
+        const y = pad.top + plotH - (plotH * i) / 4;
+        ctx.strokeStyle = "#e2e8f0";
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(pad.left + plotW, y);
+        ctx.stroke();
+        ctx.fillText((maxY * i / 4).toFixed(0), pad.left - 8, y);
+      }
+
+      function drawSeries(key, lineColor) {
+        ctx.strokeStyle = lineColor;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        series.forEach((point, idx) => {
+          const x = pad.left + (plotW * idx) / Math.max(1, series.length - 1);
+          const y = pad.top + plotH - (plotH * point[key]) / maxY;
+          if (idx === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+
+      drawSeries("demand", "#dc2626");
+      drawSeries("generation", "#eab308");
+      drawSeries("battery", "#2563eb");
+
+      ctx.fillStyle = "#667085";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      for (const hour of [0, 6, 12, 18, 23]) {
+        const x = pad.left + (plotW * hour) / 23;
+        ctx.fillText(`${hour}:00`, x, pad.top + plotH + 10);
+      }
+      ctx.fillStyle = component.color;
+      ctx.fillRect(pad.left, 7, 14, 10);
+      ctx.fillStyle = "#172033";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillText(`component ${component.id} sample day ${agreementDiagnostics.sample_day}`, pad.left + 20, 16);
+
+      const s = component.summary;
+      readout.innerHTML = `<strong style="color:${component.color}">component ${component.id}</strong>: ${component.size} buildings (${component.residential} residential / ${component.commercial} commercial), PV ${component.pv_kw.toFixed(1)} kW, battery ${component.battery_kwh.toFixed(1)} kWh. 24h demand ${s.demand_kwh.toFixed(1)} kWh, generation ${s.generation_kwh.toFixed(1)} kWh, deficit ${s.deficit_kwh.toFixed(1)} kWh; surplus hours ${s.surplus_hours}, deficit hours ${s.deficit_hours}. ${component.reason}`;
+    }
+
+    function updateAgreementHover(componentId) {
+      selectedAgreementComponent = componentId || selectedAgreementComponent;
+      drawAgreementHoverMap(selectedAgreementComponent);
+      drawAgreementHoverPlot(selectedAgreementComponent);
+    }
+
+    const agreementHoverMap = document.getElementById("agreementHoverMap");
+    if (agreementHoverMap && agreementDiagnostics) {
+      agreementHoverMap.addEventListener("pointermove", (event) => {
+        const rect = agreementHoverMap.getBoundingClientRect();
+        const pad = 22;
+        const cellSize = (rect.width - pad * 2) / agreementDiagnostics.grid_size;
+        const col = Math.floor((event.clientX - rect.left - pad) / cellSize);
+        const row = Math.floor((event.clientY - rect.top - pad) / cellSize);
+        const cell = agreementCellByKey.get(`${row},${col}`);
+        if (cell?.component) updateAgreementHover(cell.component);
+      });
+      agreementHoverMap.addEventListener("mouseleave", () => updateAgreementHover(selectedAgreementComponent));
+    }
+
     daySlider.addEventListener("input", () => updateDay(Number(daySlider.value)));
     hourSlider.addEventListener("input", () => updateHour(Number(hourSlider.value)));
     productivityToggle.addEventListener("change", () => drawProductivity());
     window.addEventListener("resize", () => {
       updateDay(Number(daySlider.value));
       updateHour(Number(hourSlider.value));
+      updateAgreementHover(selectedAgreementComponent);
     });
 
     updateDay(Number(daySlider.value));
     updateHour(Number(hourSlider.value));
+    updateAgreementHover(selectedAgreementComponent);
   </script>
 </body>
 </html>

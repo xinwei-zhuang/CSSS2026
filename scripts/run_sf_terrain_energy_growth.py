@@ -1378,6 +1378,144 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
     )
     image.save(path)
 
+
+def build_agreement_hover_data(
+    cells: list[Cell],
+    grid_size: int,
+    res_profile: list[float],
+    com_profile: list[float],
+    solar_cf: list[float],
+) -> dict[str, Any]:
+    edges: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    by_pos = {(c.row, c.col): c for c in cells if c.land and c.occupied}
+    for cell in cells:
+        if not cell.land or not cell.occupied:
+            continue
+        for npos in cell.cables:
+            edges.add(edge_key((cell.row, cell.col), npos))
+
+    stats = agreement_component_stats(cells, edges)
+    components_raw = sorted(stats["agreement_components_raw"], key=len, reverse=True)
+    palette = ["#6366f1", "#0e7490", "#f59e0b", "#9333ea", "#0891b2", "#d97706", "#2563eb"]
+    component_by_pos: dict[tuple[int, int], int] = {}
+    for idx, component in enumerate(components_raw):
+        for pos in component:
+            component_by_pos[pos] = idx + 1
+
+    sample_start = 0
+    if len(solar_cf) >= 24 * 183:
+        sample_start = 24 * 181
+    elif len(solar_cf) >= 24:
+        sample_start = max(0, len(solar_cf) - 24)
+
+    def profile_value(profile: list[float], hour: int) -> float:
+        if not profile:
+            return 0.0
+        return profile[(sample_start + hour) % len(profile)]
+
+    components: list[dict[str, Any]] = []
+    for idx, component in enumerate(components_raw):
+        component_cells = [by_pos[pos] for pos in component if pos in by_pos]
+        soc_by_pos = {
+            (cell.row, cell.col): min(cell.battery_kwh, max(0.0, cell.battery_soc))
+            for cell in component_cells
+        }
+        if sum(soc_by_pos.values()) <= 1e-9:
+            soc_by_pos = {(cell.row, cell.col): cell.battery_kwh * 0.35 for cell in component_cells}
+        series = []
+        daily_demand = 0.0
+        daily_generation = 0.0
+        daily_deficit = 0.0
+        surplus_hours = 0
+        deficit_hours = 0
+        for hour in range(24):
+            demand = 0.0
+            generation = 0.0
+            for cell in component_cells:
+                profile = com_profile if cell.use_type == "commercial" else res_profile
+                raw_demand = profile_value(profile, hour)
+                load_scale = cell.floors * (0.82 if cell.use_type == "residential" else 0.12)
+                cell_demand = raw_demand * load_scale
+                cell_generation = cell.pv_kw * solar_cf[(sample_start + hour) % len(solar_cf)] * cell.solar_factor if solar_cf else 0.0
+                demand += cell_demand
+                generation += cell_generation
+                balance = cell_generation - cell_demand
+                pos = (cell.row, cell.col)
+                if balance > 0 and cell.battery_kwh > 0:
+                    room = max(0.0, cell.battery_kwh - soc_by_pos[pos])
+                    charge = min(room, balance * 0.92)
+                    soc_by_pos[pos] += charge
+                elif balance < 0 and cell.battery_kwh > 0:
+                    deficit = -balance
+                    discharge = min(soc_by_pos[pos], deficit / 0.92)
+                    soc_by_pos[pos] -= discharge
+            battery = sum(soc_by_pos.values())
+            net = generation - demand
+            daily_demand += demand
+            daily_generation += generation
+            if net >= 0:
+                surplus_hours += 1
+            else:
+                deficit_hours += 1
+                daily_deficit += -net
+            series.append({
+                "hour": hour,
+                "demand": round(demand, 3),
+                "generation": round(generation, 3),
+                "battery": round(battery, 3),
+            })
+        commercial = sum(1 for cell in component_cells if cell.use_type == "commercial")
+        pv_kw = sum(cell.pv_kw for cell in component_cells)
+        battery_kwh = sum(cell.battery_kwh for cell in component_cells)
+        if daily_generation < daily_demand * 0.8:
+            reason = "Demand is larger than local PV generation on this sample day, so this component is usually a requester, not an attractive donor."
+        elif battery_kwh <= 1e-9:
+            reason = "There is little or no storage, so surplus is time-limited and may not match neighbors' request hours."
+        elif len(component_cells) <= 2:
+            reason = "This is a small paid-adjacent pair; no neighboring transaction produced enough value to pay for the next bridge agreement."
+        else:
+            reason = "The component has local surplus windows, but expansion still needs an adjacent requester, a donor offer, and affordable transit cost in the same hour."
+        components.append({
+            "id": idx + 1,
+            "color": palette[idx % len(palette)],
+            "size": len(component_cells),
+            "commercial": commercial,
+            "residential": len(component_cells) - commercial,
+            "pv_kw": round(pv_kw, 2),
+            "battery_kwh": round(battery_kwh, 2),
+            "summary": {
+                "demand_kwh": round(daily_demand, 2),
+                "generation_kwh": round(daily_generation, 2),
+                "deficit_kwh": round(daily_deficit, 2),
+                "surplus_hours": surplus_hours,
+                "deficit_hours": deficit_hours,
+            },
+            "reason": reason,
+            "series": series,
+        })
+
+    return {
+        "grid_size": grid_size,
+        "sample_day": sample_start // 24 + 1,
+        "cells": [
+            {
+                "row": c.row,
+                "col": c.col,
+                "land": c.land,
+                "occupied": c.occupied,
+                "use_type": c.use_type,
+                "component": component_by_pos.get((c.row, c.col), 0),
+            }
+            for c in cells
+        ],
+        "edges": [
+            {"a": [left[0], left[1]], "b": [right[0], right[1]]}
+            for left, right in sorted(edges)
+        ],
+        "components": components,
+    }
+
+
 def write_outputs(
     out_dir: Path,
     cells: list[Cell],
@@ -1386,6 +1524,9 @@ def write_outputs(
     frames: list[tuple[int, Image.Image]],
     costs: dict[str, float],
     sources: dict[str, str],
+    res_profile: list[float],
+    com_profile: list[float],
+    solar_cf: list[float],
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     frame_images = [image for _, image in frames]
@@ -1426,6 +1567,11 @@ def write_outputs(
     }
     (out_dir / "timeline_data.js").write_text(
         "window.SF_TIMELINE = " + json.dumps(timeline, separators=(",", ":")) + ";\n",
+        encoding="utf-8",
+    )
+    agreement_hover = build_agreement_hover_data(cells, grid_size, res_profile, com_profile, solar_cf)
+    (out_dir / "agreement_component_hover_data.js").write_text(
+        "window.SF_AGREEMENT_COMPONENTS = " + json.dumps(agreement_hover, separators=(",", ":")) + ";\n",
         encoding="utf-8",
     )
     with (out_dir / "sf_energy_growth_metrics.csv").open("w", newline="", encoding="utf-8") as f:
@@ -1532,7 +1678,7 @@ def main() -> None:
         args.out_dir,
     )
     sources = {**terrain_sources, **climate_sources, **profile_sources}
-    write_outputs(args.out_dir, cells, args.grid_size, metrics, frames, costs, sources)
+    write_outputs(args.out_dir, cells, args.grid_size, metrics, frames, costs, sources, res_profile, com_profile, solar_cf)
     print(json.dumps({
         "out_dir": str(args.out_dir),
         "final": metrics[-1],
