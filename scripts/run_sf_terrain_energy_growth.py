@@ -1184,7 +1184,58 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
         nodes.add(right)
 
     stats = agreement_component_stats(cells, edges)
-    level2_networks = sorted(stats["agreement_components_raw"], key=len, reverse=True)
+    component_networks = sorted(stats["agreement_components_raw"], key=len, reverse=True)
+    adjacency: dict[tuple[int, int], set[tuple[int, int]]] = {node: set() for node in nodes}
+    for left, right in edges:
+        adjacency[left].add(right)
+        adjacency[right].add(left)
+
+    def split_into_linked_clusters(component: list[tuple[int, int]], target_size: int = 18) -> list[list[tuple[int, int]]]:
+        unassigned = set(component)
+        clusters: list[list[tuple[int, int]]] = []
+        while unassigned:
+            seed = max(unassigned, key=lambda pos: len(adjacency.get(pos, set())))
+            unassigned.remove(seed)
+            queue = [seed]
+            cluster: list[tuple[int, int]] = []
+            while queue and len(cluster) < target_size:
+                pos = queue.pop(0)
+                cluster.append(pos)
+                candidates = sorted(
+                    [npos for npos in adjacency.get(pos, set()) if npos in unassigned],
+                    key=lambda npos: len(adjacency.get(npos, set())),
+                    reverse=True,
+                )
+                for npos in candidates:
+                    if len(cluster) + len(queue) >= target_size:
+                        break
+                    unassigned.remove(npos)
+                    queue.append(npos)
+            if len(cluster) >= 2:
+                clusters.append(cluster)
+                continue
+            singleton = cluster[0]
+            for existing in clusters:
+                if any(npos in existing for npos in adjacency.get(singleton, set())):
+                    existing.append(singleton)
+                    break
+        return sorted(clusters, key=len, reverse=True)
+
+    level2_networks: list[list[tuple[int, int]]] = []
+    for component in component_networks:
+        level2_networks.extend(split_into_linked_clusters(component))
+    level2_networks = sorted(level2_networks, key=len, reverse=True)
+    cluster_by_pos: dict[tuple[int, int], int] = {}
+    for idx, network in enumerate(level2_networks):
+        for pos in network:
+            cluster_by_pos[pos] = idx
+    level3_edges: set[tuple[int, int]] = set()
+    for left, right in edges:
+        left_cluster = cluster_by_pos.get(left)
+        right_cluster = cluster_by_pos.get(right)
+        if left_cluster is None or right_cluster is None or left_cluster == right_cluster:
+            continue
+        level3_edges.add(tuple(sorted((left_cluster, right_cluster))))
 
     tile_w = 22
     tile_h = 12
@@ -1247,16 +1298,18 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
             if left in network_set and right in network_set:
                 draw.line([iso(left[0], left[1], z), iso(right[0], right[1], z)], fill=color, width=1)
 
-    # L2: first-order networks among buildings.
-    top_l2 = level2_networks[:6]
+    # L2: first-order linked clusters among buildings.
+    top_l2 = level2_networks[:24]
     for idx, network in enumerate(top_l2):
         color = level2_palette[idx % len(level2_palette)]
-        z = 120 + 155 * (len(network) / largest_l2)
+        z = 96 + 118 * (len(network) / largest_l2)
         draw_network_canopy(network, z, color, 0.66, 7, 2)
+        if idx >= 10:
+            continue
         center_row = sum(row for row, _ in network) / len(network)
         center_col = sum(col for _, col in network) / len(network)
         lx, ly = iso(round(center_row), round(center_col), z + 18)
-        label = f"L2 N{idx + 1}: {len(network)}"
+        label = f"L2 C{idx + 1}: {len(network)}"
         tw = 7 * len(label) + 12
         draw.rectangle([lx - tw / 2, ly - 12, lx + tw / 2, ly + 8], fill=(248, 250, 252), outline=color)
         draw.text((lx - tw / 2 + 6, ly - 9), label, fill=(15, 23, 42))
@@ -1265,35 +1318,37 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
     panel_x, panel_y = 930, 124
     draw.rounded_rectangle([panel_x, panel_y, panel_x + 330, panel_y + 250], radius=8, fill=(255, 255, 255), outline=(203, 213, 225))
     draw.text((panel_x + 18, panel_y + 18), "L3 abstract meta-network", fill=(15, 23, 42))
-    draw.text((panel_x + 18, panel_y + 42), "nodes are L2 networks, not buildings", fill=(71, 85, 105))
-    meta_nodes = top_l2[: min(5, len(top_l2))]
-    meta_positions = [
-        (panel_x + 114, panel_y + 124),
-        (panel_x + 225, panel_y + 112),
-        (panel_x + 174, panel_y + 194),
-        (panel_x + 82, panel_y + 190),
-        (panel_x + 260, panel_y + 190),
-    ]
-    if len(meta_nodes) > 1:
-        for idx in range(len(meta_nodes)):
-            x0, y0 = meta_positions[idx]
-            x1, y1 = meta_positions[(idx + 1) % len(meta_nodes)]
-            draw.line([x0, y0, x1, y1], fill=(148, 163, 184), width=2)
+    draw.text((panel_x + 18, panel_y + 42), "nodes are L2 clusters, not buildings", fill=(71, 85, 105))
+    meta_nodes = top_l2[: min(12, len(top_l2))]
+    meta_positions = []
+    center_x, center_y = panel_x + 166, panel_y + 142
+    radius_x, radius_y = 112, 72
+    for idx, _network in enumerate(meta_nodes):
+        angle = -math.pi / 2 + 2 * math.pi * idx / max(1, len(meta_nodes))
+        meta_positions.append((center_x + radius_x * math.cos(angle), center_y + radius_y * math.sin(angle)))
+    visible_edge_count = 0
+    for left_idx, right_idx in sorted(level3_edges):
+        if left_idx >= len(meta_nodes) or right_idx >= len(meta_nodes):
+            continue
+        x0, y0 = meta_positions[left_idx]
+        x1, y1 = meta_positions[right_idx]
+        draw.line([x0, y0, x1, y1], fill=(148, 163, 184), width=1)
+        visible_edge_count += 1
     for idx, network in enumerate(meta_nodes):
         x, y = meta_positions[idx]
-        r = 12 + int(12 * math.sqrt(len(network) / max(1, largest_l2)))
+        r = 8 + int(10 * math.sqrt(len(network) / max(1, largest_l2)))
         color = level2_palette[idx % len(level2_palette)]
         draw.ellipse([x - r, y - r, x + r, y + r], fill=blend(color, 0.28), outline=level3_color, width=2)
-        draw.text((x - 10, y - 5), f"N{idx + 1}", fill=(15, 23, 42))
-        draw.text((x - 12, y + r + 5), str(len(network)), fill=(71, 85, 105))
+        draw.text((x - 8, y - 5), str(idx + 1), fill=(15, 23, 42))
+    draw.text((panel_x + 18, panel_y + 218), f"showing {len(meta_nodes)} of {len(level2_networks)} L2 clusters; {visible_edge_count} visible links", fill=(71, 85, 105))
 
     lx, ly = 42, height - 260
     draw.text((lx, ly), "Layer definition", fill=(15, 23, 42))
     ly += 28
     legend_rows = [
         ((105, 180, 166), f"L1 buildings: {sum(1 for c in cells if c.land and c.occupied)} individual cells"),
-        ((37, 99, 235), f"L2 first network: {len(level2_networks)} building agreement networks"),
-        (level3_color, f"L3 second network: network among {len(level2_networks)} L2 networks"),
+        ((37, 99, 235), f"L2 clusters: {len(level2_networks)} linked building clusters"),
+        (level3_color, f"L3 meta-network: {len(level3_edges)} links among L2 clusters"),
     ]
     for idx, (color, label) in enumerate(legend_rows):
         x = lx
@@ -1301,7 +1356,7 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
         draw.rectangle([x, y, x + 18, y + 18], fill=color)
         draw.text((x + 26, y + 2), label, fill=(71, 85, 105))
     ly += 106
-    draw.text((lx, ly), "Largest L2 network sizes", fill=(15, 23, 42))
+    draw.text((lx, ly), "Largest L2 cluster sizes", fill=(15, 23, 42))
     for idx, network in enumerate(top_l2[:5]):
         x = lx + 190 + idx * 116
         y = ly
@@ -1310,7 +1365,7 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
         draw.text((x + 22, y), str(len(network)), fill=(71, 85, 105))
     draw.text(
         (42, height - 42),
-        "L2 and L3 are measured after the run from paid adjacent agreement edges; agents only act as buildings during the simulation.",
+        "L2 clusters and L3 links are measured after the run from paid adjacent agreement edges; unlinked buildings are not L2 clusters.",
         fill=(71, 85, 105),
     )
     image.save(path)
