@@ -1167,7 +1167,7 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
     draw.text((42, 34), "3-layer hierarchy canopy", fill=(15, 23, 42))
     draw.text(
         (42, 58),
-        "L1 = buildings only. L2 = building-to-building transmission networks. L3 = network-to-network envelope.",
+        "L1 = buildings only. L2 = building-to-building transmission networks. L3 = abstract network-of-networks.",
         fill=(71, 85, 105),
     )
 
@@ -1185,12 +1185,6 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
 
     stats = agreement_component_stats(cells, edges)
     level2_networks = sorted(stats["agreement_components_raw"], key=len, reverse=True)
-    level3_networks = [sorted(nodes)] if nodes else []
-
-    network_by_pos: dict[tuple[int, int], int] = {}
-    for idx, network in enumerate(level2_networks):
-        for pos in network:
-            network_by_pos[pos] = idx
 
     tile_w = 22
     tile_h = 12
@@ -1216,27 +1210,17 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
     level3_color = (190, 18, 60)
     largest_l2 = max((len(network) for network in level2_networks), default=1)
 
-    # L1: buildings only, no aggregation canopy.
+    # L1: buildings only, no aggregation or network coloring.
     for cell in cells:
         if not cell.land:
             continue
-        pos = (cell.row, cell.col)
         if not cell.occupied:
             fill = (221, 230, 223)
         elif cell.use_type == "commercial":
             fill = (214, 158, 80)
         else:
-            network_idx = network_by_pos.get(pos, -1)
-            if network_idx >= 0:
-                fill = blend(level2_palette[network_idx % len(level2_palette)], 0.18, ROLE_COLORS["residential"])
-            else:
-                fill = ROLE_COLORS["residential"]
+            fill = ROLE_COLORS["residential"]
         draw.polygon(diamond(cell.row, cell.col, 0.0), fill=fill, outline=(255, 255, 255))
-
-    for left, right in edges:
-        if left not in by_pos or right not in by_pos:
-            continue
-        draw.line([iso(left[0], left[1]), iso(right[0], right[1])], fill=(45, 55, 72), width=1)
 
     def draw_network_canopy(
         network: list[tuple[int, int]],
@@ -1259,22 +1243,9 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
                 draw.line([iso(row, col, z), iso(row, col + 1, z)], fill=color, width=outline_width)
             if south not in network_set:
                 draw.line([iso(row, col, z), iso(row + 1, col, z)], fill=color, width=outline_width)
-
-    def draw_meta_network_envelope(network: list[tuple[int, int]], z: float, color: tuple[int, int, int]) -> None:
-        network_set = set(network)
-        moore_offsets = [
-            (dr, dc)
-            for dr in (-1, 0, 1)
-            for dc in (-1, 0, 1)
-            if not (dr == 0 and dc == 0)
-        ]
-        for row, col in sorted(network, key=lambda p: p[0] + p[1]):
-            if all((row + dr, col + dc) in network_set for dr, dc in moore_offsets):
-                continue
-            pts = diamond(row, col, z)
-            draw.line(pts + [pts[0]], fill=color, width=2)
-        for row, col in network[:: max(1, len(network) // 80)]:
-            draw.line([iso(row, col, 0.0), iso(row, col, z)], fill=blend(color, 0.60), width=1)
+        for left, right in edges:
+            if left in network_set and right in network_set:
+                draw.line([iso(left[0], left[1], z), iso(right[0], right[1], z)], fill=color, width=1)
 
     # L2: first-order networks among buildings.
     top_l2 = level2_networks[:6]
@@ -1290,17 +1261,31 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
         draw.rectangle([lx - tw / 2, ly - 12, lx + tw / 2, ly + 8], fill=(248, 250, 252), outline=color)
         draw.text((lx - tw / 2 + 6, ly - 9), label, fill=(15, 23, 42))
 
-    # L3: second-order network, drawn as the envelope over L2 networks.
-    for network in level3_networks:
-        z = 360
-        draw_meta_network_envelope(network, z, level3_color)
-        center_row = sum(row for row, _ in network) / len(network)
-        center_col = sum(col for _, col in network) / len(network)
-        lx, ly = iso(round(center_row), round(center_col), z + 20)
-        label = f"L3 network of networks: {len(level2_networks)} L2 networks"
-        tw = 7 * len(label) + 14
-        draw.rectangle([lx - tw / 2, ly - 13, lx + tw / 2, ly + 9], fill=(248, 250, 252), outline=level3_color)
-        draw.text((lx - tw / 2 + 7, ly - 9), label, fill=(15, 23, 42))
+    # L3: second-order network, shown separately so it is not confused with transmission.
+    panel_x, panel_y = 930, 124
+    draw.rounded_rectangle([panel_x, panel_y, panel_x + 330, panel_y + 250], radius=8, fill=(255, 255, 255), outline=(203, 213, 225))
+    draw.text((panel_x + 18, panel_y + 18), "L3 abstract meta-network", fill=(15, 23, 42))
+    draw.text((panel_x + 18, panel_y + 42), "nodes are L2 networks, not buildings", fill=(71, 85, 105))
+    meta_nodes = top_l2[: min(5, len(top_l2))]
+    meta_positions = [
+        (panel_x + 114, panel_y + 124),
+        (panel_x + 225, panel_y + 112),
+        (panel_x + 174, panel_y + 194),
+        (panel_x + 82, panel_y + 190),
+        (panel_x + 260, panel_y + 190),
+    ]
+    if len(meta_nodes) > 1:
+        for idx in range(len(meta_nodes)):
+            x0, y0 = meta_positions[idx]
+            x1, y1 = meta_positions[(idx + 1) % len(meta_nodes)]
+            draw.line([x0, y0, x1, y1], fill=(148, 163, 184), width=2)
+    for idx, network in enumerate(meta_nodes):
+        x, y = meta_positions[idx]
+        r = 12 + int(12 * math.sqrt(len(network) / max(1, largest_l2)))
+        color = level2_palette[idx % len(level2_palette)]
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=blend(color, 0.28), outline=level3_color, width=2)
+        draw.text((x - 10, y - 5), f"N{idx + 1}", fill=(15, 23, 42))
+        draw.text((x - 12, y + r + 5), str(len(network)), fill=(71, 85, 105))
 
     lx, ly = 42, height - 260
     draw.text((lx, ly), "Layer definition", fill=(15, 23, 42))
