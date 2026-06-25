@@ -12,6 +12,8 @@
     .panel { background: white; border: 1px solid #cbd5e1; border-radius: 8px; padding: 18px; margin-top: 18px; }
     img { max-width: 100%; height: auto; display: block; border: 1px solid #cbd5e1; background: #f8fafc; }
     code { background: #e2e8f0; padding: 2px 5px; border-radius: 4px; }
+    .swatch { width: 13px; height: 13px; display: inline-block; margin: 0 4px -2px 8px; border-radius: 3px; border: 1px solid rgba(15,23,42,.16); }
+    .line { width: 22px; height: 2px; display: inline-block; margin: 0 4px 3px 8px; background: #172033; }
   </style>
 </head>
 <body>
@@ -22,7 +24,7 @@
     <div class="panel"><h2>Evolution</h2><img src="sf_energy_growth_evolution.gif" alt="evolution"></div>
     <div class="panel"><h2>Final Map</h2><img src="sf_energy_growth_final.png" alt="final map"></div>
     <div class="panel"><h2>Metrics</h2><img src="sf_energy_growth_metrics.png" alt="metrics"></div>
-    <div class="panel"><h2>Agreement Components</h2><img src="sf_energy_growth_agreement_components.png" alt="agreement components"></div>
+    <div class="panel"><h2>Agreement Components</h2><p>The colored cells are emergent agreement components, not preassigned blocks: <span class="swatch" style="background:#6366f1"></span><strong>purple</strong> is component 1, the largest connected agreement network with 311 buildings; <span class="swatch" style="background:#0e7490"></span><strong>blue-green</strong> is component 2 with 2 buildings; <span class="swatch" style="background:#f59e0b"></span><strong>yellow</strong> is component 3 with 2 buildings. <span class="line"></span><strong>black line segments</strong> are paid adjacent transmission agreements between neighboring buildings.</p><img src="sf_energy_growth_agreement_components.png" alt="agreement components"></div>
     <div class="panel"><h2>Hierarchy Canopy</h2><img src="sf_energy_growth_hierarchy_canopy.png" alt="hierarchy canopy"></div>
     <div class="panel">
       <p>Data files: <a href="sf_energy_growth_cells.csv">cells CSV</a>, <a href="sf_energy_growth_metrics.csv">metrics CSV</a>, <a href="sf_energy_growth_summary.json">summary JSON</a>.</p>
