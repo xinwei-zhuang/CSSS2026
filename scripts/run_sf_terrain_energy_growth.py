@@ -1161,13 +1161,13 @@ def write_agreement_components_png(cells: list[Cell], grid_size: int, path: Path
 
 
 def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) -> None:
-    width, height = 1360, 1220
+    width, height = 1360, 1280
     image = Image.new("RGB", (width, height), (248, 250, 252))
     draw = ImageDraw.Draw(image)
     draw.text((42, 34), "3-layer hierarchy canopy", fill=(15, 23, 42))
     draw.text(
         (42, 58),
-        "Base plane is the SF building grid. Layers are post-hoc graph readings: local modules, connected components, and system envelope.",
+        "L1 = buildings only. L2 = building-to-building transmission networks. L3 = network-to-network envelope.",
         fill=(71, 85, 105),
     )
 
@@ -1183,84 +1183,14 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
         nodes.add(left)
         nodes.add(right)
 
-    def connected_components_from_edges(
-        graph_nodes: set[tuple[int, int]],
-        graph_edges: set[tuple[tuple[int, int], tuple[int, int]]],
-    ) -> list[list[tuple[int, int]]]:
-        adj: dict[tuple[int, int], set[tuple[int, int]]] = {node: set() for node in graph_nodes}
-        for left, right in graph_edges:
-            if left in graph_nodes and right in graph_nodes:
-                adj[left].add(right)
-                adj[right].add(left)
-        seen: set[tuple[int, int]] = set()
-        comps_out: list[list[tuple[int, int]]] = []
-        for start in sorted(graph_nodes):
-            if start in seen:
-                continue
-            stack = [start]
-            seen.add(start)
-            comp: list[tuple[int, int]] = []
-            while stack:
-                pos = stack.pop()
-                comp.append(pos)
-                for nxt in adj.get(pos, set()):
-                    if nxt not in seen:
-                        seen.add(nxt)
-                        stack.append(nxt)
-            comps_out.append(sorted(comp))
-        return comps_out
-
-    def find_bridge_edges(
-        graph_nodes: set[tuple[int, int]],
-        graph_edges: set[tuple[tuple[int, int], tuple[int, int]]],
-    ) -> set[tuple[tuple[int, int], tuple[int, int]]]:
-        adj: dict[tuple[int, int], set[tuple[int, int]]] = {node: set() for node in graph_nodes}
-        for left, right in graph_edges:
-            adj[left].add(right)
-            adj[right].add(left)
-        timer = 0
-        tin: dict[tuple[int, int], int] = {}
-        low: dict[tuple[int, int], int] = {}
-        bridges: set[tuple[tuple[int, int], tuple[int, int]]] = set()
-
-        def dfs(node: tuple[int, int], parent: tuple[int, int] | None) -> None:
-            nonlocal timer
-            tin[node] = timer
-            low[node] = timer
-            timer += 1
-            for nxt in adj[node]:
-                if nxt == parent:
-                    continue
-                if nxt in tin:
-                    low[node] = min(low[node], tin[nxt])
-                    continue
-                dfs(nxt, node)
-                low[node] = min(low[node], low[nxt])
-                if low[nxt] > tin[node]:
-                    bridges.add(edge_key(node, nxt))
-
-        for node in sorted(graph_nodes):
-            if node not in tin:
-                dfs(node, None)
-        return bridges
-
     stats = agreement_component_stats(cells, edges)
-    level2_components = sorted(stats["agreement_components_raw"], key=len, reverse=True)
-    bridge_edges = find_bridge_edges(nodes, edges) if nodes else set()
-    level1_edges = {edge for edge in edges if edge not in bridge_edges}
-    level1_modules = [
-        comp for comp in connected_components_from_edges(nodes, level1_edges)
-        if len(comp) >= 2
-    ]
-    if not level1_modules:
-        level1_modules = level2_components
-    level1_modules = sorted(level1_modules, key=len, reverse=True)
-    level3_envelope = [sorted(nodes)] if nodes else []
+    level2_networks = sorted(stats["agreement_components_raw"], key=len, reverse=True)
+    level3_networks = [sorted(nodes)] if nodes else []
 
-    comp_by_pos: dict[tuple[int, int], int] = {}
-    for idx, comp in enumerate(level2_components):
-        for pos in comp:
-            comp_by_pos[pos] = idx
+    network_by_pos: dict[tuple[int, int], int] = {}
+    for idx, network in enumerate(level2_networks):
+        for pos in network:
+            network_by_pos[pos] = idx
 
     tile_w = 22
     tile_h = 12
@@ -1282,19 +1212,11 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
             (cx - tile_w * 0.5, cy),
         ]
 
-    palette = [
-        (30, 153, 213),
-        (34, 163, 84),
-        (148, 65, 220),
-        (215, 137, 23),
-        (99, 102, 241),
-        (107, 114, 128),
-    ]
-    level1_palette = [(14, 165, 233), (34, 197, 94), (245, 158, 11), (168, 85, 247), (20, 184, 166)]
     level2_palette = [(37, 99, 235), (5, 150, 105), (147, 51, 234), (217, 119, 6), (79, 70, 229)]
     level3_color = (190, 18, 60)
-    largest = max((len(comp) for comp in level2_components), default=1)
+    largest_l2 = max((len(network) for network in level2_networks), default=1)
 
+    # L1: buildings only, no aggregation canopy.
     for cell in cells:
         if not cell.land:
             continue
@@ -1304,121 +1226,109 @@ def write_hierarchy_canopy_png(cells: list[Cell], grid_size: int, path: Path) ->
         elif cell.use_type == "commercial":
             fill = (214, 158, 80)
         else:
-            comp_idx = comp_by_pos.get(pos, -1)
-            if comp_idx >= 0:
-                fill = blend(palette[comp_idx % len(palette)], 0.28, ROLE_COLORS["residential"])
+            network_idx = network_by_pos.get(pos, -1)
+            if network_idx >= 0:
+                fill = blend(level2_palette[network_idx % len(level2_palette)], 0.18, ROLE_COLORS["residential"])
             else:
                 fill = ROLE_COLORS["residential"]
-        pts = diamond(cell.row, cell.col, 0.0)
-        draw.polygon(pts, fill=fill, outline=(255, 255, 255))
+        draw.polygon(diamond(cell.row, cell.col, 0.0), fill=fill, outline=(255, 255, 255))
 
     for left, right in edges:
         if left not in by_pos or right not in by_pos:
             continue
         draw.line([iso(left[0], left[1]), iso(right[0], right[1])], fill=(45, 55, 72), width=1)
 
-    def draw_canopy_tiles(
-        comp: list[tuple[int, int]],
+    def draw_network_canopy(
+        network: list[tuple[int, int]],
         z: float,
         color: tuple[int, int, int],
         fill_mix: float,
         line_every: int,
         outline_width: int,
     ) -> None:
-        comp_set = set(comp)
-        for row, col in comp:
-            if line_every > 0 and (row + col) % line_every == 0:
-                base = iso(row, col, 0.0)
-                top = iso(row, col, z)
-                draw.line([base, top], fill=blend(color, 0.45), width=1)
-        for row, col in sorted(comp, key=lambda p: p[0] + p[1]):
+        network_set = set(network)
+        for row, col in network:
+            if (row + col) % line_every == 0:
+                draw.line([iso(row, col, 0.0), iso(row, col, z)], fill=blend(color, 0.45), width=1)
+        for row, col in sorted(network, key=lambda p: p[0] + p[1]):
             pts = diamond(row, col, z)
             draw.polygon(pts, fill=blend(color, fill_mix), outline=color)
             east = (row, col + 1)
             south = (row + 1, col)
-            if east not in comp_set:
-                p1 = iso(row, col, z)
-                p2 = iso(row, col + 1, z)
-                draw.line([p1, p2], fill=color, width=outline_width)
-            if south not in comp_set:
-                p1 = iso(row, col, z)
-                p2 = iso(row + 1, col, z)
-                draw.line([p1, p2], fill=color, width=outline_width)
+            if east not in network_set:
+                draw.line([iso(row, col, z), iso(row, col + 1, z)], fill=color, width=outline_width)
+            if south not in network_set:
+                draw.line([iso(row, col, z), iso(row + 1, col, z)], fill=color, width=outline_width)
 
-    def draw_envelope_outline(comp: list[tuple[int, int]], z: float, color: tuple[int, int, int]) -> None:
-        comp_set = set(comp)
+    def draw_meta_network_envelope(network: list[tuple[int, int]], z: float, color: tuple[int, int, int]) -> None:
+        network_set = set(network)
         moore_offsets = [
             (dr, dc)
             for dr in (-1, 0, 1)
             for dc in (-1, 0, 1)
             if not (dr == 0 and dc == 0)
         ]
-        for row, col in sorted(comp, key=lambda p: p[0] + p[1]):
-            if all((row + dr, col + dc) in comp_set for dr, dc in moore_offsets):
+        for row, col in sorted(network, key=lambda p: p[0] + p[1]):
+            if all((row + dr, col + dc) in network_set for dr, dc in moore_offsets):
                 continue
             pts = diamond(row, col, z)
             draw.line(pts + [pts[0]], fill=color, width=2)
-        for row, col in comp[:: max(1, len(comp) // 80)]:
+        for row, col in network[:: max(1, len(network) // 80)]:
             draw.line([iso(row, col, 0.0), iso(row, col, z)], fill=blend(color, 0.60), width=1)
 
-    top_level1 = level1_modules[:10]
-    for idx, comp in enumerate(top_level1):
-        color = level1_palette[idx % len(level1_palette)]
-        z = 48 + 82 * (len(comp) / max(1, len(top_level1[0])))
-        draw_canopy_tiles(comp, z, color, 0.74, 5, 1)
-
-    top_level2 = level2_components[:6]
-    for idx, comp in enumerate(top_level2):
+    # L2: first-order networks among buildings.
+    top_l2 = level2_networks[:6]
+    for idx, network in enumerate(top_l2):
         color = level2_palette[idx % len(level2_palette)]
-        z = 170 + 120 * (len(comp) / largest)
-        draw_canopy_tiles(comp, z, color, 0.66, 7, 2)
-        center_row = sum(row for row, _ in comp) / len(comp)
-        center_col = sum(col for _, col in comp) / len(comp)
+        z = 120 + 155 * (len(network) / largest_l2)
+        draw_network_canopy(network, z, color, 0.66, 7, 2)
+        center_row = sum(row for row, _ in network) / len(network)
+        center_col = sum(col for _, col in network) / len(network)
         lx, ly = iso(round(center_row), round(center_col), z + 18)
-        label = f"L2 C{idx + 1}: {len(comp)}"
+        label = f"L2 N{idx + 1}: {len(network)}"
         tw = 7 * len(label) + 12
         draw.rectangle([lx - tw / 2, ly - 12, lx + tw / 2, ly + 8], fill=(248, 250, 252), outline=color)
         draw.text((lx - tw / 2 + 6, ly - 9), label, fill=(15, 23, 42))
 
-    for comp in level3_envelope:
+    # L3: second-order network, drawn as the envelope over L2 networks.
+    for network in level3_networks:
         z = 360
-        draw_envelope_outline(comp, z, level3_color)
-        center_row = sum(row for row, _ in comp) / len(comp)
-        center_col = sum(col for _, col in comp) / len(comp)
+        draw_meta_network_envelope(network, z, level3_color)
+        center_row = sum(row for row, _ in network) / len(network)
+        center_col = sum(col for _, col in network) / len(network)
         lx, ly = iso(round(center_row), round(center_col), z + 20)
-        label = f"L3 system envelope: {len(comp)}"
+        label = f"L3 network of networks: {len(level2_networks)} L2 networks"
         tw = 7 * len(label) + 14
         draw.rectangle([lx - tw / 2, ly - 13, lx + tw / 2, ly + 9], fill=(248, 250, 252), outline=level3_color)
         draw.text((lx - tw / 2 + 7, ly - 9), label, fill=(15, 23, 42))
 
-    lx, ly = 42, height - 234
-    draw.text((lx, ly), "Layer colors", fill=(15, 23, 42))
+    lx, ly = 42, height - 260
+    draw.text((lx, ly), "Layer definition", fill=(15, 23, 42))
     ly += 28
     legend_rows = [
-        ((14, 165, 233), f"L1 local modules: {len(level1_modules)} bridge-pruned groups"),
-        ((37, 99, 235), f"L2 transmission components: {len(level2_components)} connected components"),
-        (level3_color, f"L3 system envelope: {len(nodes)} buildings with agreements"),
+        ((105, 180, 166), f"L1 buildings: {sum(1 for c in cells if c.land and c.occupied)} individual cells"),
+        ((37, 99, 235), f"L2 first network: {len(level2_networks)} building agreement networks"),
+        (level3_color, f"L3 second network: network among {len(level2_networks)} L2 networks"),
     ]
     for idx, (color, label) in enumerate(legend_rows):
         x = lx
         y = ly + idx * 30
         draw.rectangle([x, y, x + 18, y + 18], fill=color)
         draw.text((x + 26, y + 2), label, fill=(71, 85, 105))
-    ly += 112
-    draw.text((lx, ly), "Largest L1 modules", fill=(15, 23, 42))
-    for idx, comp in enumerate(top_level1[:5]):
-        x = lx + 170 + idx * 116
+    ly += 106
+    draw.text((lx, ly), "Largest L2 network sizes", fill=(15, 23, 42))
+    for idx, network in enumerate(top_l2[:5]):
+        x = lx + 190 + idx * 116
         y = ly
-        color = level1_palette[idx % len(level1_palette)]
+        color = level2_palette[idx % len(level2_palette)]
         draw.rectangle([x, y + 3, x + 16, y + 17], fill=color)
-        draw.text((x + 22, y), str(len(comp)), fill=(71, 85, 105))
+        draw.text((x + 22, y), str(len(network)), fill=(71, 85, 105))
     draw.text(
         (42, height - 42),
-        "All layers are measured after the run from paid adjacent agreement edges; agents do not see these canopies during the simulation.",
+        "L2 and L3 are measured after the run from paid adjacent agreement edges; agents only act as buildings during the simulation.",
         fill=(71, 85, 105),
     )
     image.save(path)
-
 
 def write_outputs(
     out_dir: Path,
