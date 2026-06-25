@@ -41,6 +41,68 @@ The current property-value scaling factors are intentionally simple:
 Commercial buildings are therefore more sensitive to property value than
 residential buildings, but commercial use is not pre-zoned.
 
+## Agent Equations
+
+Each occupied cell is a building agent `i`. The code still stores property value
+as `productivity`; below it is written as `P_i` to match the model concept.
+
+| Quantity | Equation |
+| --- | --- |
+| Local slope | `s_i = sqrt((z_east - z_west)^2 + (z_south - z_north)^2)` |
+| Property value | `P_i = clip(0.72 + 0.34 * (1 - s_i / s_95) + 0.04 * east_i, 0.55, 1.10)` |
+| Local solar factor | `F_i = clip((0.58 + 0.52 * east_i + 0.08 * elev_norm_i) * (1 + 0.07 * southness_i), 0.45, 1.24)` |
+| Residential entry score | `E_i = 0.55 * norm(F_i) + 0.45 * norm(P_i) + epsilon_i`, where `epsilon_i ~ U(-0.035, 0.035)` |
+| Hourly demand | `D_i(t) = load_type_i(t) * floors_i * scale_type_i` |
+| Demand scale | `scale_res = 0.82`; `scale_com = 0.12` |
+| Hourly PV generation | `G_i(t) = pv_kw_i * climate_solar(t) * F_i` |
+| Direct self-service | `S_i^self(t) = min(D_i(t), G_i(t))` |
+| Battery charge | `B_i(t+1) = min(Bcap_i, B_i(t) + 0.92 * max(G_i(t) - D_i(t), 0))` |
+| Battery discharge | `discharge_i(t) = min(B_i(t), max(D_i(t) - G_i(t), 0) / 0.92)` |
+| Served after battery | `S_i(t) = S_i^self(t) + 0.92 * discharge_i(t) + imports_i(t)` |
+| Surplus offer | `Q_i(t) = max(G_i(t) - D_i(t) - charge_i(t) / 0.92, 0)` |
+| Service ratio | `R_i = lifetime_served_i / lifetime_demand_i` |
+| Property-value income effect | `V_i = 1 + alpha_type_i * (P_i - 1)` |
+| Income | `Y_i(d) = base_type_i * floors_i * V_i * clip(R_i(d), 0.15, 1.05)` |
+| Daily money update | `M_i(d+1) = M_i(d) + Y_i(d) - O&M_i(d) - 0.18 * unmet_i(d) - investments_i(d) - agreement_costs_i(d) + transit_fees_i(d)` |
+
+Income parameters:
+
+| Type | `base_type` | `alpha_type` |
+| --- | ---: | ---: |
+| residential | `125` | `0.45` |
+| commercial | `520` | `1.25` |
+
+Transmission and agreement equations:
+
+| Quantity | Equation |
+| --- | --- |
+| Path efficiency | `eta_path = 0.965 ^ hops` |
+| Delivered energy | `delivered = min(deficit_requester / eta_path, surplus_donor) * eta_path` |
+| New agreement cost | `C_path = 650 * missing_edges(path)` |
+| Transit fee | `T_path = 0.012 * delivered * transit_nodes(path)` |
+| Feasible transfer | transfer occurs only if `M_requester >= C_path + T_path` |
+| L2 component | connected component of buildings joined by paid adjacent agreement edges |
+| L3 graph | graph among L2 components when agreement links cross component boundaries |
+
+Commercial conversion is a decision rule, not a land-use assumption:
+
+```text
+upgrade if:
+  function_i = residential
+  service_i > 0.24
+  money_i > reserve_i + commercial_upgrade_cost_i
+  payback_days_i < 260
+  random() < conversion_chance_i
+```
+
+where:
+
+```text
+payback_days_i = commercial_upgrade_cost_i / max(1, expected_commercial_income_i - current_residential_income_i)
+conversion_chance_i = clip(0.03 + 0.62 * commercial_pressure + 0.22 * readiness_i, 0, 0.88)
+readiness_i = 0.42 * norm(P_i) + 0.26 * service_i + 0.20 * cash_readiness_i + 0.12 * cable_degree_i / 4
+```
+
 ## Initial Settings And Assumptions
 
 The experiment begins with an empty SF terrain grid:
