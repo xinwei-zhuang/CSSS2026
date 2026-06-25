@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SF Terrain Energy Growth</title>
+  <style>
+    body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #eef2f7; color: #0f172a; }
+    main { max-width: 1160px; margin: 0 auto; padding: 28px; }
+    h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: 0; }
+    p { color: #475569; line-height: 1.5; }
+    .panel { background: white; border: 1px solid #cbd5e1; border-radius: 8px; padding: 18px; margin-top: 18px; }
+    img { max-width: 100%; height: auto; display: block; border: 1px solid #cbd5e1; background: #f8fafc; }
+    code { background: #e2e8f0; padding: 2px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SF terrain energy growth</h1>
+    <p>One-rule version: the grid starts empty, residential startups choose buildable cells by solar/productivity opportunity, and every building has only one function, residential or commercial. PV, battery, and cable are purchased assets. If a building has surplus, it can serve a requester through adjacent paid transmission agreements. Agreement components are read afterward as emergent blocks; no block grid or block treasury is predefined.</p>
+    <div class="panel"><strong>Final:</strong> service=0.418, PV=2130 kW, battery=3210 kWh, agreements=314, components=3, largest component=311.</div>
+    <div class="panel"><h2>Evolution</h2><img src="sf_energy_growth_evolution.gif" alt="evolution"></div>
+    <div class="panel"><h2>Final Map</h2><img src="sf_energy_growth_final.png" alt="final map"></div>
+    <div class="panel"><h2>Metrics</h2><img src="sf_energy_growth_metrics.png" alt="metrics"></div>
+    <div class="panel"><h2>Agreement Components</h2><img src="sf_energy_growth_agreement_components.png" alt="agreement components"></div>
+    <div class="panel"><h2>Hierarchy Canopy</h2><img src="sf_energy_growth_hierarchy_canopy.png" alt="hierarchy canopy"></div>
+    <div class="panel">
+      <p>Data files: <a href="sf_energy_growth_cells.csv">cells CSV</a>, <a href="sf_energy_growth_metrics.csv">metrics CSV</a>, <a href="sf_energy_growth_summary.json">summary JSON</a>.</p>
+      <p>Sources: NASA POWER hourly ALLSKY_SFC_SW_DWN, 2025, San Francisco point; synthetic_sf_hills; local load profiles from <code>D:\CSSS2026\cities in petri dish\data\energy_profiles_clean\energy_profiles_hourly_used.csv</code>.</p>
+    </div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SF Terrain Energy Growth Timeline</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #667085;
+      --line: #d7dee8;
+      --paper: #ffffff;
+      --soft: #f4f7fa;
+      --green: #139447;
+      --gold: #eab308;
+      --blue: #0ea5e9;
+      --violet: #9333ea;
+      --orange: #d69e50;
+      --red: #dc2626;
+      --navy: #172033;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #e8eef4;
+      color: var(--ink);
+    }
+
+    main {
+      width: min(1460px, 100%);
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    a {
+      color: #235a98;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: baseline;
+      padding: 8px 2px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(22px, 3vw, 34px);
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      line-height: 1.52;
+    }
+
+    .subtitle {
+      margin-top: 8px;
+      max-width: 1020px;
+    }
+
+    .tag {
+      flex: 0 0 auto;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      padding: 7px 10px;
+      border-radius: 6px;
+      color: #3d4b63;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .timeline-shell {
+      margin-top: 16px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .timeline-head {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .day-badge {
+      min-width: 96px;
+      min-height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: #25344d;
+      color: white;
+      font-weight: 800;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #25344d;
+    }
+
+    .frame-note {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.5fr) minmax(360px, 0.9fr);
+      gap: 18px;
+      margin-top: 18px;
+      align-items: stretch;
+    }
+
+    .map-frame,
+    .panel,
+    .media {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .map-frame {
+      padding: 12px;
+      min-height: 620px;
+      display: grid;
+      place-items: center;
+    }
+
+    .map-frame img,
+    .media img {
+      width: 100%;
+      height: auto;
+      display: block;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+    }
+
+    .panel,
+    .media {
+      padding: 15px;
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .metric {
+      min-height: 84px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--soft);
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.25;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 8px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+      margin-top: 14px;
+      font-size: 13px;
+    }
+
+    .legend-item {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      border: 1px solid rgba(23, 32, 51, 0.18);
+      flex: 0 0 auto;
+    }
+
+    .charts {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .chart-card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    canvas {
+      width: 100%;
+      height: 210px;
+      display: block;
+      cursor: ew-resize;
+    }
+
+    .section-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .rules {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .rule {
+      display: grid;
+      grid-template-columns: 32px 1fr;
+      gap: 10px;
+      align-items: start;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft);
+    }
+
+    .rule-num {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: #25344d;
+      color: white;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .rule strong { display: block; margin-bottom: 4px; }
+    .rule span { display: block; color: var(--muted); line-height: 1.42; }
+
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      font-size: 14px;
+    }
+
+    .data-table th,
+    .data-table td {
+      border-bottom: 1px solid #e2e8f0;
+      padding: 9px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .data-table th {
+      color: #3d4b63;
+      font-weight: 700;
+      width: 110px;
+    }
+
+    .data-table td { color: var(--muted); }
+
+    .files {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .file-link {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 10px;
+      background: var(--soft);
+      color: #235a98;
+      text-decoration: none;
+    }
+
+    @media (max-width: 1050px) {
+      main { padding: 14px; }
+      .topbar,
+      .timeline-head { align-items: stretch; grid-template-columns: 1fr; flex-direction: column; }
+      .hero,
+      .section-grid,
+      .charts { grid-template-columns: 1fr; }
+      .map-frame { min-height: 0; }
+      .frame-note { white-space: normal; }
+    }
+
+    @media (max-width: 620px) {
+      .metrics-grid,
+      .legend { grid-template-columns: 1fr; }
+      .metric strong { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="topbar">
+      <div>
+        <h1>SF terrain energy growth</h1>
+        <p class="subtitle">Minimal version: San Francisco terrain is the base plane. The grid starts empty; residential startups choose high solar/productivity cells, then buildings buy PV, batteries, floors, and adjacent paid transmission agreements.</p>
+      </div>
+      <div class="tag">28 x 28 grid - empty start - 365 days - 2025 solar</div>
+    </header>
+
+    <section class="timeline-shell">
+      <div class="timeline-head">
+        <div class="day-badge" id="dayBadge">Day 365</div>
+        <input id="daySlider" type="range" min="1" max="365" value="365" step="1" aria-label="simulation day">
+        <div class="frame-note" id="frameNote">rendered frame: day 365</div>
+      </div>
+    </section>
+
+    <section class="hero">
+      <div class="map-frame">
+        <img id="frameImage" src="timeline_frames/day_365.png" alt="SF terrain energy map for selected day">
+      </div>
+
+      <aside class="panel">
+        <h2 id="snapshotTitle">Day 365 Snapshot</h2>
+        <p id="snapshotText">The current day is selected from the simulation timeline. Daily metrics update exactly; the map uses the nearest rendered frame from the saved evolution animation.</p>
+
+        <div class="metrics-grid">
+          <div class="metric"><span>served fraction today</span><strong id="servedValue">0.061</strong></div>
+          <div class="metric"><span>mean lifetime service</span><strong id="lifeValue">0.418</strong></div>
+          <div class="metric"><span>PV capacity</span><strong id="pvValue">2.13 MW</strong></div>
+          <div class="metric"><span>battery capacity</span><strong id="batteryValue">3.21 MWh</strong></div>
+          <div class="metric"><span>agreement edges</span><strong id="cablesValue">314</strong></div>
+          <div class="metric"><span>shared energy today</span><strong id="sharedValue">0.0 kWh</strong></div>
+          <div class="metric"><span>agreement components</span><strong id="commercialValue">4</strong></div>
+          <div class="metric"><span>largest component / depth</span><strong id="rolesValue">311 / 8.28</strong></div>
+        </div>
+
+        <div class="legend">
+          <div class="legend-item"><span class="swatch" style="background: var(--orange)"></span>commercial</div>
+          <div class="legend-item"><span class="swatch" style="background: #69b4a6"></span>residential</div>
+          <div class="legend-item"><span class="swatch" style="background: var(--gold)"></span>PV asset marker</div>
+          <div class="legend-item"><span class="swatch" style="background: var(--blue)"></span>battery asset marker</div>
+          <div class="legend-item"><span class="swatch" style="background: #172033"></span>agreement edge</div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="charts">
+      <div class="chart-card">
+        <h2>Service</h2>
+        <canvas id="serviceChart" width="540" height="260" aria-label="service timeline"></canvas>
+      </div>
+      <div class="chart-card">
+        <h2>Infrastructure</h2>
+        <canvas id="infraChart" width="540" height="260" aria-label="infrastructure timeline"></canvas>
+      </div>
+      <div class="chart-card">
+        <h2>Agreement Hierarchy</h2>
+        <canvas id="rolesChart" width="540" height="260" aria-label="agreement hierarchy timeline"></canvas>
+      </div>
+    </section>
+
+    <section class="section-grid">
+      <div class="media">
+        <h2>Animation Source</h2>
+        <img src="sf_energy_growth_evolution.gif" alt="SF energy growth animation">
+      </div>
+      <div class="media">
+        <h2>Static Metrics Export</h2>
+        <img src="sf_energy_growth_metrics.png" alt="SF energy growth metrics">
+      </div>
+    </section>
+
+    <section class="section-grid">
+      <div class="panel">
+        <h2>Rules</h2>
+        <div class="rules">
+          <div class="rule">
+            <div class="rule-num">1</div>
+            <div><strong>Initial condition</strong><span>Day 0 is empty buildable SF terrain. No building exists before startup entry.</span></div>
+          </div>
+          <div class="rule">
+            <div class="rule-num">2</div>
+            <div><strong>Entry and investment</strong><span>One residential startup enters each day by choosing high solar/productivity opportunity. PV, batteries, cables, floors, and commercial upgrades all cost money.</span></div>
+          </div>
+          <div class="rule">
+            <div class="rule-num">3</div>
+            <div><strong>Sharing</strong><span>Generosity = 1 only. A surplus building gives energy to the first requester reachable through adjacent paid agreement edges.</span></div>
+          </div>
+          <div class="rule">
+            <div class="rule-num">4</div>
+            <div><strong>Emergence</strong><span>No extra building functions are defined. The second layer is read only from connected components of paid agreement edges.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Data And Parameters</h2>
+        <table class="data-table">
+          <tr><th>Climate</th><td>NASA POWER hourly ALLSKY_SFC_SW_DWN, 2025, San Francisco point; then west-to-east fog gradient and aspect adjustment.</td></tr>
+          <tr><th>Terrain</th><td>Synthetic SF hills fallback. USGS EPQS point queries were tested but too slow for 28 x 28 direct sampling.</td></tr>
+          <tr><th>Load</th><td>One residential and one commercial profile sampled from local cleaned hourly profiles, then scaled to 6,200 and 82,000 kWh/year.</td></tr>
+          <tr><th>Entry</th><td>One residential startup per day; site score = 0.55 solar opportunity + 0.45 productivity opportunity + small noise.</td></tr>
+          <tr><th>Commercial</th><td>Residential buildings can upgrade when productivity/service/money make commercial payback short enough; conversion is capped near 10% market share.</td></tr>
+          <tr><th>Productivity</th><td>Residential productivity scale = 0.45; commercial productivity scale = 1.25.</td></tr>
+          <tr><th>Costs</th><td>PV $2.41/Wdc; battery $466/kWh x 10 kWh unit; cable $650/link; floor $6,000; commercial upgrade $3,600.</td></tr>
+        </table>
+
+        <div class="files">
+          <a class="file-link" href="sf_energy_growth_cells.csv">cells CSV</a>
+          <a class="file-link" href="sf_energy_growth_metrics.csv">metrics CSV</a>
+          <a class="file-link" href="sf_energy_growth_summary.json">summary JSON</a>
+          <a class="file-link" href="timeline_data.js">timeline data</a>
+          <a class="file-link" href="sf_energy_growth_agreement_components.png">agreement components</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="timeline_data.js"></script>
+  <script>
+    const data = window.SF_TIMELINE;
+    const metrics = data.metrics;
+    const frames = data.frames;
+    const slider = document.getElementById("daySlider");
+    const dayBadge = document.getElementById("dayBadge");
+    const frameNote = document.getElementById("frameNote");
+    const frameImage = document.getElementById("frameImage");
+    const snapshotTitle = document.getElementById("snapshotTitle");
+    const snapshotText = document.getElementById("snapshotText");
+
+    const fields = {
+      servedValue: document.getElementById("servedValue"),
+      lifeValue: document.getElementById("lifeValue"),
+      pvValue: document.getElementById("pvValue"),
+      batteryValue: document.getElementById("batteryValue"),
+      cablesValue: document.getElementById("cablesValue"),
+      sharedValue: document.getElementById("sharedValue"),
+      commercialValue: document.getElementById("commercialValue"),
+      rolesValue: document.getElementById("rolesValue"),
+    };
+
+    const charts = [
+      {
+        id: "serviceChart",
+        max: 1,
+        series: [
+          ["served_fraction", "served", "#139447"],
+          ["mean_service_lifetime", "lifetime", "#2563eb"],
+        ],
+      },
+      {
+        id: "infraChart",
+        max: null,
+        series: [
+          ["pv_kw", "PV kW", "#eab308"],
+          ["battery_kwh", "battery kWh", "#0ea5e9"],
+          ["cables", "cables", "#172033"],
+        ],
+      },
+      {
+        id: "rolesChart",
+        max: null,
+        series: [
+          ["agreement_components", "components", "#6366f1"],
+          ["largest_agreement_component", "largest", "#0e7490"],
+          ["agreement_depth_index", "depth", "#9333ea"],
+        ],
+      },
+    ];
+
+    function fmt3(value) {
+      return Number(value).toFixed(3);
+    }
+
+    function fmtK(value, suffix) {
+      if (value >= 1000) return `${(value / 1000).toFixed(2)} ${suffix}`;
+      return `${Math.round(value)} ${suffix}`;
+    }
+
+    function nearestFrame(day) {
+      let best = frames[0];
+      let bestDist = Math.abs(day - best.day);
+      for (const frame of frames) {
+        const dist = Math.abs(day - frame.day);
+        if (dist < bestDist) {
+          best = frame;
+          bestDist = dist;
+        }
+      }
+      return best;
+    }
+
+    function metricFor(day) {
+      return metrics[Math.max(0, Math.min(metrics.length - 1, day - 1))];
+    }
+
+    function currentPhase(m) {
+      if (m.day < 45) return "startup phase: early PV adoption and first local agreements dominate.";
+      if (m.day < 160) return "agreement formation phase: connected components expand only through adjacent paid agreements.";
+      if (m.day < 260) return "high-service phase: summer solar supports the strongest sharing through existing agreement components.";
+      if (m.commercial_cells > 0) return "differentiation phase: commercial conversion appears while winter solar weakens daily service.";
+      return "late-season stress phase: stored infrastructure remains, but daily solar availability falls.";
+    }
+
+    function update(day) {
+      const m = metricFor(day);
+      const frame = nearestFrame(day);
+      dayBadge.textContent = `Day ${day}`;
+      frameImage.src = frame.src;
+      frameNote.textContent = `rendered frame: day ${frame.day}`;
+      snapshotTitle.textContent = `Day ${day} Snapshot`;
+      snapshotText.textContent = currentPhase(m);
+      fields.servedValue.textContent = fmt3(m.served_fraction);
+      fields.lifeValue.textContent = fmt3(m.mean_service_lifetime);
+      fields.pvValue.textContent = fmtK(m.pv_kw, "MW").replace("MW", "kW").replace(/^([0-9.]+) kW$/, (_, n) => `${(m.pv_kw / 1000).toFixed(2)} MW`);
+      fields.batteryValue.textContent = `${(m.battery_kwh / 1000).toFixed(2)} MWh`;
+      fields.cablesValue.textContent = String(m.cables);
+      fields.sharedValue.textContent = `${m.shared_kwh.toFixed(1)} kWh`;
+      fields.commercialValue.textContent = String(m.agreement_components);
+      fields.rolesValue.textContent = `${m.largest_agreement_component} / ${m.agreement_depth_index.toFixed(2)}`;
+      drawAll(day);
+    }
+
+    function drawAll(day) {
+      for (const config of charts) drawChart(config, day);
+    }
+
+    function drawChart(config, selectedDay) {
+      const canvas = document.getElementById(config.id);
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(320, Math.round(rect.width));
+      const height = Math.max(190, Math.round(rect.height));
+      if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+
+      const pad = { left: 42, right: 14, top: 18, bottom: 28 };
+      const plotW = width - pad.left - pad.right;
+      const plotH = height - pad.top - pad.bottom;
+      const values = config.series.flatMap(([key]) => metrics.map((m) => m[key]));
+      const maxY = config.max ?? Math.max(1, ...values);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = "#d7dee8";
+      ctx.strokeRect(pad.left, pad.top, plotW, plotH);
+      ctx.font = "12px Inter, system-ui, sans-serif";
+      ctx.fillStyle = "#667085";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      for (let i = 0; i <= 4; i++) {
+        const y = pad.top + plotH - (plotH * i) / 4;
+        ctx.strokeStyle = "#e2e8f0";
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(pad.left + plotW, y);
+        ctx.stroke();
+        ctx.fillText((maxY * i / 4).toFixed(maxY <= 1 ? 1 : 0), pad.left - 8, y);
+      }
+
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      let legendX = pad.left + 4;
+      for (const [key, label, color] of config.series) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        metrics.forEach((m, i) => {
+          const x = pad.left + (plotW * i) / (metrics.length - 1);
+          const y = pad.top + plotH - (plotH * Math.min(maxY, m[key])) / maxY;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        ctx.fillStyle = color;
+        ctx.fillRect(legendX, 5, 12, 8);
+        ctx.fillStyle = "#172033";
+        ctx.fillText(label, legendX + 18, 13);
+        legendX += Math.min(150, 58 + label.length * 7);
+      }
+
+      const markerX = pad.left + (plotW * (selectedDay - 1)) / (metrics.length - 1);
+      ctx.strokeStyle = "#172033";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(markerX, pad.top);
+      ctx.lineTo(markerX, pad.top + plotH);
+      ctx.stroke();
+
+      ctx.fillStyle = "#172033";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(`Day ${selectedDay}`, markerX, pad.top + plotH + 8);
+    }
+
+    function setDayFromPointer(event, canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+      const padLeft = 42;
+      const padRight = 14;
+      const ratio = Math.max(0, Math.min(1, (x - padLeft) / Math.max(1, rect.width - padLeft - padRight)));
+      const day = Math.round(1 + ratio * 364);
+      slider.value = String(day);
+      update(day);
+    }
+
+    slider.addEventListener("input", () => update(Number(slider.value)));
+    for (const config of charts) {
+      const canvas = document.getElementById(config.id);
+      let dragging = false;
+      canvas.addEventListener("pointerdown", (event) => {
+        dragging = true;
+        canvas.setPointerCapture(event.pointerId);
+        setDayFromPointer(event, canvas);
+      });
+      canvas.addEventListener("pointermove", (event) => {
+        if (dragging) setDayFromPointer(event, canvas);
+      });
+      canvas.addEventListener("pointerup", () => { dragging = false; });
+      canvas.addEventListener("pointercancel", () => { dragging = false; });
+    }
+    window.addEventListener("resize", () => drawAll(Number(slider.value)));
+
+    update(Number(slider.value));
+  </script>
+</body>
+</html>

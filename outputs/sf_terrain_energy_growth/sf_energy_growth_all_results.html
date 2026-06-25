@@ -1,0 +1,882 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SF Minimal Energy Hierarchy Results</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #667085;
+      --line: #d7dee8;
+      --paper: #ffffff;
+      --soft: #f5f8fb;
+      --bg: #e8eef4;
+      --res: #69b4a6;
+      --com: #d69e50;
+      --solar: #f2c94c;
+      --battery: #43a0dd;
+      --edge: #172033;
+      --purple: #6366f1;
+      --teal: #0e7490;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1500px, 100%);
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    a {
+      color: #235a98;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    h1, h2, h3 { letter-spacing: 0; }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(24px, 3.4vw, 42px);
+      line-height: 1.04;
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 20px;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+    }
+
+    p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      line-height: 1.52;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+      gap: 18px;
+      align-items: stretch;
+      padding: 8px 0 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .hero-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: 260px;
+    }
+
+    .subtitle {
+      margin-top: 12px;
+      max-width: 980px;
+      font-size: 16px;
+    }
+
+    .panel,
+    .media,
+    .timeline {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .panel,
+    .media {
+      padding: 15px;
+    }
+
+    .section {
+      margin-top: 18px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .stack {
+      display: grid;
+      grid-template-columns: minmax(0, 920px);
+      justify-content: center;
+      gap: 18px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .card {
+      min-height: 84px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--soft);
+    }
+
+    .card span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.25;
+    }
+
+    .card strong {
+      display: block;
+      margin-top: 8px;
+      font-size: 24px;
+    }
+
+    .rule-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .rule {
+      display: grid;
+      grid-template-columns: 32px 1fr;
+      gap: 10px;
+      align-items: start;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft);
+    }
+
+    .num {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: #25344d;
+      color: white;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .timeline {
+      padding: 14px;
+    }
+
+    .timeline-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .badge {
+      min-width: 112px;
+      min-height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: #25344d;
+      color: white;
+      font-weight: 800;
+      font-size: 18px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #25344d;
+    }
+
+    .note {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    img,
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+    }
+
+    canvas.chart {
+      height: 210px;
+      cursor: ew-resize;
+    }
+
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .legend-item {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .swatch {
+      width: 14px;
+      height: 14px;
+      flex: 0 0 auto;
+      border-radius: 3px;
+      border: 1px solid rgba(23, 32, 51, 0.16);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      margin-top: 8px;
+    }
+
+    th, td {
+      border-bottom: 1px solid #e2e8f0;
+      text-align: left;
+      vertical-align: top;
+      padding: 9px 8px;
+    }
+
+    th {
+      width: 210px;
+      color: #3d4b63;
+    }
+
+    td {
+      color: var(--muted);
+    }
+
+    .files {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .file-link {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 10px;
+      background: var(--soft);
+      color: #235a98;
+      text-decoration: none;
+    }
+
+    .small {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 32px;
+      padding: 6px 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--soft);
+      color: #3d4b63;
+      font-size: 13px;
+      white-space: nowrap;
+      user-select: none;
+    }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    @media (max-width: 1120px) {
+      main { padding: 14px; }
+      .hero,
+      .grid-2,
+      .grid-3 { grid-template-columns: 1fr; }
+      .timeline-row { grid-template-columns: 1fr; }
+      .note { white-space: normal; }
+    }
+
+    @media (max-width: 640px) {
+      .cards,
+      .legend { grid-template-columns: 1fr; }
+      .card strong { font-size: 22px; }
+      th { width: auto; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <h1>SF minimal energy hierarchy results</h1>
+        <p class="subtitle">这个页面把当前所有结果集中到一个入口：地形和 climate 假设、building-level 生长、paid transmission agreement、以及从 agreement network 读出来的第二层 hierarchy。模型里 building function 只有 residential / commercial；PV、电池、电缆只是资产。</p>
+      </div>
+      <div class="panel">
+        <h2>Final Run</h2>
+        <div class="cards">
+          <div class="card"><span>grid / occupied</span><strong>28 x 28 / 365 of 419</strong></div>
+          <div class="card"><span>mean lifetime service</span><strong id="heroService">0.418</strong></div>
+          <div class="card"><span>PV / battery</span><strong id="heroInfra">2.13 MW / 3.21 MWh</strong></div>
+          <div class="card"><span>agreement components</span><strong id="heroAgreement">3 comps</strong></div>
+          <div class="card"><span>largest component</span><strong id="heroLargest">311 buildings</strong></div>
+          <div class="card"><span>functions</span><strong id="heroFunctions">328 Res / 37 Com</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section grid-2">
+      <div class="panel">
+        <h2>Minimal Rules</h2>
+        <div class="rule-list">
+          <div class="rule"><div class="num">1</div><div><h3>Building function</h3><p>Every building is either residential or commercial. PV and batteries are assets a building can buy, not extra building functions.</p></div></div>
+          <div class="rule"><div class="num">2</div><div><h3>Entry</h3><p>The grid starts empty. Each day a small number of residential startups choose empty buildable cells with high solar/productivity opportunity.</p></div></div>
+          <div class="rule"><div class="num">3</div><div><h3>Sharing</h3><p>If a building has surplus, it can serve a requester through adjacent paid agreement edges. One transaction can add at most one adjacent agreement edge.</p></div></div>
+          <div class="rule"><div class="num">4</div><div><h3>Hierarchy</h3><p>Blocks are not predefined. A block is read afterward as a connected component of paid adjacent transmission agreements.</p></div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Interpretation</h2>
+        <p>The first layer is individual building investment and local energy sharing. The second layer appears only when transmission agreements connect buildings into larger components. That means the hierarchy is not a block grid imposed in advance; it is an agreement graph that grows from energy and money constraints.</p>
+        <table>
+          <tr><th>Question</th><td>Can a minimal one-rule sharing system form higher-level transmission structure?</td></tr>
+          <tr><th>Current answer</th><td>Yes, in this run the final agreement graph has 3 connected components, with the largest containing 311 buildings. Commercial reaches 37 / 365 occupied cells, about 1:9.</td></tr>
+          <tr><th>Caution</th><td>Commercial conversion is still rare in this parameter setting, so the land-use layer remains mostly residential.</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <section class="section timeline">
+      <div class="timeline-row">
+        <div class="badge" id="dayBadge">Day 365</div>
+        <input id="daySlider" type="range" min="1" max="365" value="365" step="1" aria-label="simulation day">
+        <div class="note" id="frameNote">rendered frame: day 365</div>
+      </div>
+    </section>
+
+    <section class="section grid-2">
+      <div class="media">
+        <h2>Simulation Timeline</h2>
+        <img id="frameImage" src="timeline_frames/day_365.png" alt="selected simulation frame">
+      </div>
+      <div class="panel">
+        <h2 id="dayTitle">Day 365 Snapshot</h2>
+        <p id="dayText">Drag the timeline to inspect how service, infrastructure, and agreement hierarchy evolve.</p>
+        <div class="cards">
+          <div class="card"><span>served fraction today</span><strong id="servedValue">0.061</strong></div>
+          <div class="card"><span>mean lifetime service</span><strong id="lifeValue">0.418</strong></div>
+          <div class="card"><span>PV capacity</span><strong id="pvValue">2.13 MW</strong></div>
+          <div class="card"><span>battery capacity</span><strong id="batteryValue">3.21 MWh</strong></div>
+          <div class="card"><span>agreement edges</span><strong id="cablesValue">314</strong></div>
+          <div class="card"><span>shared energy today</span><strong id="sharedValue">0.0 kWh</strong></div>
+          <div class="card"><span>components</span><strong id="componentsValue">3</strong></div>
+          <div class="card"><span>largest / depth</span><strong id="largestValue">311 / 8.28</strong></div>
+        </div>
+        <div class="legend">
+          <div class="legend-item"><span class="swatch" style="background:var(--res)"></span>residential</div>
+          <div class="legend-item"><span class="swatch" style="background:var(--com)"></span>commercial</div>
+          <div class="legend-item"><span class="swatch" style="background:var(--solar)"></span>PV asset marker</div>
+          <div class="legend-item"><span class="swatch" style="background:var(--battery)"></span>battery asset marker</div>
+          <div class="legend-item"><span class="swatch" style="background:var(--edge)"></span>agreement edge</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section grid-3">
+      <div class="panel">
+        <h2>Service</h2>
+        <canvas class="chart" id="serviceChart" width="540" height="260"></canvas>
+      </div>
+      <div class="panel">
+        <h2>Infrastructure</h2>
+        <canvas class="chart" id="infraChart" width="540" height="260"></canvas>
+      </div>
+      <div class="panel">
+        <h2>Agreement Hierarchy</h2>
+        <canvas class="chart" id="agreementChart" width="540" height="260"></canvas>
+      </div>
+    </section>
+
+    <section class="section grid-2">
+      <div class="media">
+        <h2>Final Function Map</h2>
+        <img src="sf_energy_growth_final.png" alt="final function map">
+      </div>
+      <div class="media">
+        <h2>Agreement Components</h2>
+        <img src="sf_energy_growth_agreement_components.png" alt="agreement components map">
+      </div>
+    </section>
+
+    <section class="section media">
+      <h2>Hierarchy Canopy Diagram</h2>
+      <img src="sf_energy_growth_hierarchy_canopy.png" alt="hierarchy canopy diagram">
+    </section>
+
+    <section class="section grid-2">
+      <div class="media">
+        <h2>Metrics Export</h2>
+        <img src="sf_energy_growth_metrics.png" alt="metrics chart">
+      </div>
+      <div class="media">
+        <h2>Animation Export</h2>
+        <img src="sf_energy_growth_evolution.gif" alt="evolution animation">
+      </div>
+    </section>
+
+    <section class="section timeline">
+      <div class="timeline-row">
+        <div class="badge" id="hourBadge">12:00</div>
+        <input id="hourSlider" type="range" min="0" max="23" value="12" step="1" aria-label="sample day hour">
+        <div class="note" id="climateReadout">GHI 0.00 kWh/m² · temp 0.0°C</div>
+      </div>
+    </section>
+
+    <section class="section stack">
+      <div class="panel">
+        <h2>Assumption 1: Height Map</h2>
+        <canvas id="heightCanvas" width="760" height="760"></canvas>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Assumption 2: Property Value Mapping: Slope -> Productivity</h2>
+          <label class="toggle"><input id="productivityToggle" type="checkbox"> productivity values</label>
+        </div>
+        <canvas id="productivityCanvas" width="760" height="760"></canvas>
+      </div>
+      <div class="panel">
+        <h2>Assumption 3: Climate x Local Solar Factor</h2>
+        <canvas id="solarCanvas" width="760" height="760"></canvas>
+      </div>
+    </section>
+
+    <section class="section grid-2">
+      <div class="panel">
+        <h2>Settings</h2>
+        <table>
+          <tr><th>Grid</th><td>28 x 28 over San Francisco bounding box; 419 buildable terrain cells.</td></tr>
+          <tr><th>Simulation length</th><td>365 days, hourly steps, seed 20250624.</td></tr>
+          <tr><th>Initial condition</th><td>Day 0 is an empty SF terrain grid. No building exists at the start.</td></tr>
+          <tr><th>Residential entry</th><td>One new residential startup enters per day, chooses an empty buildable cell by 0.55 solar opportunity + 0.45 productivity opportunity + small noise, and receives about $10,000 startup funding.</td></tr>
+          <tr><th>Building functions</th><td>Only residential and commercial. Commercial can only emerge by upgrading an existing residential building after money/service/productivity conditions make payback short enough.</td></tr>
+          <tr><th>Commercial pressure</th><td>Commercial conversion is capped by a 10% market-share target, so final type mix approaches roughly 1 commercial per 9 residential buildings without preassigning commercial zones.</td></tr>
+          <tr><th>Productivity scaling</th><td>Residential income uses a smaller productivity scale (0.45); commercial income uses a larger productivity scale (1.25).</td></tr>
+          <tr><th>Transmission</th><td>Energy moves along adjacent paid agreement edges; efficiency per edge = 0.965; transit fee = $0.012/kWh per transit node.</td></tr>
+          <tr><th>Costs</th><td>PV $2,410/kW; battery $4,660 per 10 kWh; cable/agreement $650; floor $6,000; commercial upgrade $3,600.</td></tr>
+          <tr><th>O&M</th><td>PV $0.10/kW/day; battery $0.015/kWh/day; cable $0.04/link/day.</td></tr>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Data Sources And Assumptions</h2>
+        <table>
+          <tr><th>Climate</th><td>NASA POWER hourly ALLSKY_SFC_SW_DWN and T2M for 2025 at a San Francisco point.</td></tr>
+          <tr><th>Solar spatial factor</th><td>West-to-east fog gradient plus small south-facing aspect adjustment.</td></tr>
+          <tr><th>Terrain</th><td>Synthetic SF hills fallback. Height/elevation is shown as context; productivity is mapped from local slope, not elevation.</td></tr>
+          <tr><th>Load profiles</th><td>One residential and one commercial shape sampled from local cleaned hourly profiles.</td></tr>
+          <tr><th>Load calibration</th><td>Residential shape scaled to 6,200 kWh/year; commercial shape scaled to 82,000 kWh/year.</td></tr>
+          <tr><th>Hierarchy definition</th><td>Connected components of paid adjacent transmission agreements. No predefined block grid, no block treasury.</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <section class="section panel">
+      <h2>Files</h2>
+      <div class="files">
+        <a class="file-link" href="sf_energy_growth_dashboard.html">interactive simulation dashboard</a>
+        <a class="file-link" href="sf_assumptions_terrain_climate.html">assumptions viewer</a>
+        <a class="file-link" href="sf_energy_growth_summary.json">summary JSON</a>
+        <a class="file-link" href="sf_energy_growth_metrics.csv">metrics CSV</a>
+        <a class="file-link" href="sf_energy_growth_cells.csv">cells CSV</a>
+        <a class="file-link" href="timeline_data.js">simulation timeline data</a>
+        <a class="file-link" href="sf_assumptions_timeline_data.js">assumptions timeline data</a>
+      </div>
+      <p class="small" style="margin-top:12px">This page is a local presentation wrapper around the generated assets in this folder.</p>
+    </section>
+  </main>
+
+  <script src="timeline_data.js"></script>
+  <script src="sf_assumptions_timeline_data.js"></script>
+  <script>
+    const timeline = window.SF_TIMELINE;
+    const metrics = timeline.metrics;
+    const frames = timeline.frames;
+    const assumptions = window.SF_ASSUMPTIONS;
+    const cells = assumptions.cells;
+    const landCells = cells.filter((cell) => cell.land);
+    const gridSize = assumptions.grid_size;
+
+    const daySlider = document.getElementById("daySlider");
+    const hourSlider = document.getElementById("hourSlider");
+    const productivityToggle = document.getElementById("productivityToggle");
+    const heightCanvas = document.getElementById("heightCanvas");
+    const productivityCanvas = document.getElementById("productivityCanvas");
+
+    const dayFields = {
+      dayBadge: document.getElementById("dayBadge"),
+      frameNote: document.getElementById("frameNote"),
+      frameImage: document.getElementById("frameImage"),
+      dayTitle: document.getElementById("dayTitle"),
+      dayText: document.getElementById("dayText"),
+      servedValue: document.getElementById("servedValue"),
+      lifeValue: document.getElementById("lifeValue"),
+      pvValue: document.getElementById("pvValue"),
+      batteryValue: document.getElementById("batteryValue"),
+      cablesValue: document.getElementById("cablesValue"),
+      sharedValue: document.getElementById("sharedValue"),
+      componentsValue: document.getElementById("componentsValue"),
+      largestValue: document.getElementById("largestValue"),
+    };
+
+    const minHeight = assumptions.summary.height_min;
+    const maxHeight = assumptions.summary.height_max;
+    const minProd = assumptions.summary.productivity_min;
+    const maxProd = assumptions.summary.productivity_max;
+    const maxLocalSolar = assumptions.summary.solar_factor_max;
+
+    function clamp(value, low, high) {
+      return Math.max(low, Math.min(high, value));
+    }
+
+    function mix(a, b, t) {
+      return Math.round(a + (b - a) * t);
+    }
+
+    function color(low, high, t) {
+      const l = low.match(/\w\w/g).map((x) => parseInt(x, 16));
+      const h = high.match(/\w\w/g).map((x) => parseInt(x, 16));
+      return `rgb(${mix(l[0], h[0], t)},${mix(l[1], h[1], t)},${mix(l[2], h[2], t)})`;
+    }
+
+    function fmt3(value) {
+      return Number(value).toFixed(3);
+    }
+
+    function metricFor(day) {
+      return metrics[Math.max(0, Math.min(metrics.length - 1, day - 1))];
+    }
+
+    function nearestFrame(day) {
+      let best = frames[0];
+      let bestDist = Math.abs(day - best.day);
+      for (const frame of frames) {
+        const dist = Math.abs(day - frame.day);
+        if (dist < bestDist) {
+          best = frame;
+          bestDist = dist;
+        }
+      }
+      return best;
+    }
+
+    function phaseText(m) {
+      if (m.day < 45) return "Startup: early PV adoption and first agreement edges.";
+      if (m.day < 160) return "Agreement formation: components expand through adjacent paid agreements.";
+      if (m.day < 260) return "High-service season: summer solar supports sharing through existing components.";
+      if (m.commercial_cells > 0) return "Late differentiation: a few commercial conversions appear while winter solar weakens daily service.";
+      return "Late-season stress: infrastructure remains, but daily solar availability falls.";
+    }
+
+    function updateDay(day) {
+      const m = metricFor(day);
+      const frame = nearestFrame(day);
+      dayFields.dayBadge.textContent = `Day ${day}`;
+      dayFields.frameNote.textContent = `rendered frame: day ${frame.day}`;
+      dayFields.frameImage.src = frame.src;
+      dayFields.dayTitle.textContent = `Day ${day} Snapshot`;
+      dayFields.dayText.textContent = phaseText(m);
+      dayFields.servedValue.textContent = fmt3(m.served_fraction);
+      dayFields.lifeValue.textContent = fmt3(m.mean_service_lifetime);
+      dayFields.pvValue.textContent = `${(m.pv_kw / 1000).toFixed(2)} MW`;
+      dayFields.batteryValue.textContent = `${(m.battery_kwh / 1000).toFixed(2)} MWh`;
+      dayFields.cablesValue.textContent = String(m.cables);
+      dayFields.sharedValue.textContent = `${m.shared_kwh.toFixed(1)} kWh`;
+      dayFields.componentsValue.textContent = String(m.agreement_components);
+      dayFields.largestValue.textContent = `${m.largest_agreement_component} / ${m.agreement_depth_index.toFixed(2)}`;
+      drawCharts(day);
+    }
+
+    const chartConfigs = [
+      {
+        id: "serviceChart",
+        max: 1,
+        series: [
+          ["served_fraction", "served", "#139447"],
+          ["mean_service_lifetime", "lifetime", "#2563eb"],
+        ],
+      },
+      {
+        id: "infraChart",
+        max: null,
+        series: [
+          ["pv_kw", "PV kW", "#eab308"],
+          ["battery_kwh", "battery kWh", "#0ea5e9"],
+          ["cables", "agreements", "#172033"],
+        ],
+      },
+      {
+        id: "agreementChart",
+        max: null,
+        series: [
+          ["agreement_components", "components", "#6366f1"],
+          ["largest_agreement_component", "largest", "#0e7490"],
+          ["agreement_depth_index", "depth", "#9333ea"],
+        ],
+      },
+    ];
+
+    function drawCharts(day) {
+      for (const config of chartConfigs) drawChart(config, day);
+    }
+
+    function drawChart(config, selectedDay) {
+      const canvas = document.getElementById(config.id);
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(320, Math.round(rect.width));
+      const height = Math.max(190, Math.round(rect.height));
+      if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      const pad = { left: 42, right: 14, top: 18, bottom: 28 };
+      const plotW = width - pad.left - pad.right;
+      const plotH = height - pad.top - pad.bottom;
+      const values = config.series.flatMap(([key]) => metrics.map((m) => m[key]));
+      const maxY = config.max ?? Math.max(1, ...values);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = "#d7dee8";
+      ctx.strokeRect(pad.left, pad.top, plotW, plotH);
+      ctx.font = "12px Inter, system-ui, sans-serif";
+      ctx.fillStyle = "#667085";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      for (let i = 0; i <= 4; i++) {
+        const y = pad.top + plotH - (plotH * i) / 4;
+        ctx.strokeStyle = "#e2e8f0";
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(pad.left + plotW, y);
+        ctx.stroke();
+        ctx.fillText((maxY * i / 4).toFixed(maxY <= 1 ? 1 : 0), pad.left - 8, y);
+      }
+
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      let legendX = pad.left + 4;
+      for (const [key, label, lineColor] of config.series) {
+        ctx.strokeStyle = lineColor;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        metrics.forEach((m, i) => {
+          const x = pad.left + (plotW * i) / (metrics.length - 1);
+          const y = pad.top + plotH - (plotH * Math.min(maxY, m[key])) / maxY;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        ctx.fillStyle = lineColor;
+        ctx.fillRect(legendX, 5, 12, 8);
+        ctx.fillStyle = "#172033";
+        ctx.fillText(label, legendX + 18, 13);
+        legendX += Math.min(150, 58 + label.length * 7);
+      }
+
+      const markerX = pad.left + (plotW * (selectedDay - 1)) / (metrics.length - 1);
+      ctx.strokeStyle = "#172033";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(markerX, pad.top);
+      ctx.lineTo(markerX, pad.top + plotH);
+      ctx.stroke();
+      ctx.fillStyle = "#172033";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(`Day ${selectedDay}`, markerX, pad.top + plotH + 8);
+    }
+
+    function setDayFromPointer(event, canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+      const ratio = Math.max(0, Math.min(1, (x - 42) / Math.max(1, rect.width - 56)));
+      const day = Math.round(1 + ratio * 364);
+      daySlider.value = String(day);
+      updateDay(day);
+    }
+
+    for (const config of chartConfigs) {
+      const canvas = document.getElementById(config.id);
+      let dragging = false;
+      canvas.addEventListener("pointerdown", (event) => {
+        dragging = true;
+        canvas.setPointerCapture(event.pointerId);
+        setDayFromPointer(event, canvas);
+      });
+      canvas.addEventListener("pointermove", (event) => {
+        if (dragging) setDayFromPointer(event, canvas);
+      });
+      canvas.addEventListener("pointerup", () => { dragging = false; });
+      canvas.addEventListener("pointercancel", () => { dragging = false; });
+    }
+
+    function setupSquareCanvas(canvas) {
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const size = Math.max(320, Math.round(rect.width));
+      canvas.width = size * dpr;
+      canvas.height = size * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { ctx, size };
+    }
+
+    function drawHeight() {
+      const { ctx, size } = setupSquareCanvas(heightCanvas);
+      const pad = 22;
+      const cellSize = (size - pad * 2) / gridSize;
+      ctx.clearRect(0, 0, size, size);
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(0, 0, size, size);
+      for (const cell of cells) {
+        const x = pad + cell.col * cellSize;
+        const y = pad + cell.row * cellSize;
+        const heightT = clamp((cell.height_m - minHeight) / Math.max(1, maxHeight - minHeight), 0, 1);
+        ctx.fillStyle = color("d7ead6", "594a42", heightT);
+        ctx.fillRect(x, y, cellSize - 0.8, cellSize - 0.8);
+        if (!cell.land) {
+          ctx.fillStyle = "rgba(248, 250, 252, 0.42)";
+          ctx.fillRect(x, y, cellSize - 0.8, cellSize - 0.8);
+        }
+      }
+      ctx.fillStyle = "#172033";
+      ctx.font = "13px Inter, system-ui, sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillText("Height map only: elevation is context, not the productivity variable", pad, size - 8);
+    }
+
+    function drawProductivity() {
+      const { ctx, size } = setupSquareCanvas(productivityCanvas);
+      const pad = 22;
+      const cellSize = (size - pad * 2) / gridSize;
+      ctx.clearRect(0, 0, size, size);
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(0, 0, size, size);
+      for (const cell of cells) {
+        const x = pad + cell.col * cellSize;
+        const y = pad + cell.row * cellSize;
+        if (!cell.land) {
+          ctx.fillStyle = "#e9f0f6";
+          ctx.fillRect(x, y, cellSize - 0.8, cellSize - 0.8);
+          continue;
+        }
+        const prodT = clamp((cell.productivity - minProd) / Math.max(0.001, maxProd - minProd), 0, 1);
+        const slopeT = clamp(cell.slope / 95, 0, 1);
+        ctx.fillStyle = color("f0a36a", "1f9d8a", prodT);
+        ctx.fillRect(x, y, cellSize - 0.8, cellSize - 0.8);
+        ctx.fillStyle = `rgba(23, 32, 51, ${0.08 + slopeT * 0.34})`;
+        ctx.fillRect(x, y, cellSize - 0.8, cellSize - 0.8);
+        if (productivityToggle.checked && cellSize >= 18) {
+          ctx.fillStyle = "#062d27";
+          ctx.font = `${Math.max(7, Math.floor(cellSize * 0.30))}px Inter, system-ui, sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(cell.productivity.toFixed(2), x + cellSize * 0.5, y + cellSize * 0.52);
+        }
+      }
+      ctx.fillStyle = "#172033";
+      ctx.font = "13px Inter, system-ui, sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillText("Productivity mapping: local slope lowers property value; elevation is not used directly", pad, size - 8);
+    }
+
+    function drawSolar(hourIndex) {
+      const canvas = document.getElementById("solarCanvas");
+      const { ctx, size } = setupSquareCanvas(canvas);
+      const hour = assumptions.hours[hourIndex];
+      const pad = 22;
+      const cellSize = (size - pad * 2) / gridSize;
+      ctx.clearRect(0, 0, size, size);
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(0, 0, size, size);
+      for (const cell of cells) {
+        const x = pad + cell.col * cellSize;
+        const y = pad + cell.row * cellSize;
+        if (!cell.land) {
+          ctx.fillStyle = "#e9f0f6";
+          ctx.fillRect(x, y, cellSize - 0.8, cellSize - 0.8);
+          continue;
+        }
+        const potential = hour.climate_factor * cell.solar_factor / maxLocalSolar;
+        ctx.fillStyle = color("27384f", "f2c94c", clamp(potential, 0, 1));
+        ctx.fillRect(x, y, cellSize - 0.8, cellSize - 0.8);
+      }
+      ctx.fillStyle = "#172033";
+      ctx.font = "13px Inter, system-ui, sans-serif";
+      ctx.fillText("Hourly solar potential = climate factor x local solar factor", pad, size - 8);
+    }
+
+    function updateHour(hourIndex) {
+      const hour = assumptions.hours[hourIndex];
+      document.getElementById("hourBadge").textContent = `${String(hour.hour).padStart(2, "0")}:00`;
+      document.getElementById("climateReadout").textContent = `GHI ${hour.ghi_kwh_m2.toFixed(2)} kWh/m² · temp ${hour.temp_c.toFixed(1)}°C`;
+      drawHeight();
+      drawProductivity();
+      drawSolar(hourIndex);
+    }
+
+    daySlider.addEventListener("input", () => updateDay(Number(daySlider.value)));
+    hourSlider.addEventListener("input", () => updateHour(Number(hourSlider.value)));
+    productivityToggle.addEventListener("change", () => drawProductivity());
+    window.addEventListener("resize", () => {
+      updateDay(Number(daySlider.value));
+      updateHour(Number(hourSlider.value));
+    });
+
+    updateDay(Number(daySlider.value));
+    updateHour(Number(hourSlider.value));
+  </script>
+</body>
+</html>
